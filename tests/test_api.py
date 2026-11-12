@@ -253,6 +253,13 @@ try:
     st, body, hd = raw(q('/api/ls', path=ROOT), method='HEAD')
     check('HEAD не для всех адресов', st == 405, st)
 
+    # в корне виден виртуальный каталог smb
+    st, j = get(q('/api/ls', path=ROOT))
+    sm = [e for e in j['entries'] if e['n'] == 'smb']
+    check('корень: виден каталог smb (папка)', len(sm) == 1 and sm[0]['t'] == 'd', [e['n'] for e in j['entries']][:10])
+    st, j = get(q('/api/ls', path=ROOT + '/src'))
+    check('вложенные папки smb не показывают', all(e['n'] != 'smb' for e in j['entries']))
+
     # запоминание панелей
     st, j = get('/api/state')
     check('state: изначально пусто', st == 200 and j.get('l', '') == '' and j.get('r', '') == '', j)

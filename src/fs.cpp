@@ -235,6 +235,19 @@ std::string fs_ls_json(const std::string& n, std::string& err) {
         ++count;
     }
     closedir(d);
+    // Сетевые папки живут в виртуальном каталоге /smb: показываем его в корне рядом с /user, /data и т.д.
+#ifdef HOST_TEST
+    bool is_top = n == host_root();
+#else
+    bool is_top = n == "/";
+#endif
+    if (is_top && items.find("\"n\":\"smb\",") == std::string::npos && count < kMax) {
+        char vb[160];
+        snprintf(vb, sizeof(vb), "\",\"t\":\"d\",\"s\":0,\"m\":%lld,\"p\":\"755\",\"u\":0,\"g\":0}", (long long)time(nullptr));
+        if (count) items += ',';
+        items += "{\"n\":\"smb" + std::string(vb);
+        ++count;
+    }
     long long freeb = -1, totalb = -1;
     struct statvfs sv;
     if (statvfs(n.c_str(), &sv) == 0) {
