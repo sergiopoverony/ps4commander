@@ -234,7 +234,7 @@ try:
         pg.keyboard.press('Enter')
         pg.wait_for_function('()=>/game.pkg/.test(document.querySelector(".dlg pre")&&document.querySelector(".dlg pre").textContent||"")', timeout=10000)
         check('очередь установки показана', True)
-        check('в очереди есть полоса прогресса', pg.evaluate('()=>/[\\u2593\\u2591]/.test(document.querySelector(".dlg pre").textContent)'))
+        check('в очереди есть полоса прогресса на всю ширину', pg.evaluate('()=>{const b=document.querySelector(".dlg .pbar");const w=document.querySelector(".dlg .pq");return !!b && b.getBoundingClientRect().width > 0.8 * w.getBoundingClientRect().width}'))
         pg.wait_for_function('()=>/installed|установлено/.test(document.querySelector(".dlg pre").textContent)', timeout=15000)
         pg.keyboard.press('Escape')
         pg.wait_for_function('()=>!overlay.classList.contains("on")')

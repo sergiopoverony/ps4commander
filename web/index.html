@@ -64,6 +64,16 @@ body.unsafe #unsafeTag { display: inline; }
 .dlg { background: var(--dlg-bg); color: var(--dlg-fg); border: 3px double var(--dlg-border); padding: 10px 14px; min-width: min(420px, 92vw); max-width: min(900px, 96vw); max-height: 92vh; display: flex; flex-direction: column; gap: 8px; box-shadow: 8px 8px 0 rgba(0,0,0,.5); }
 .dlg.wide { width: min(960px, 96vw); height: 86vh; }
 .dlg.wide.fit { height: auto; max-height: 92vh; }
+.pq { white-space: normal; }
+.pitem { margin-bottom: 12px; }
+.pname { overflow-wrap: anywhere; }
+.pline { display: flex; justify-content: space-between; gap: 12px; opacity: .85; margin: 2px 0 5px; }
+.pbar { width: 100%; height: 10px; border-radius: 6px; background: rgba(127,127,127,.28); overflow: hidden; }
+.pbar.big { height: 14px; }
+.pfill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, #1f9bc4, #62d6ef); transition: width .6s ease; }
+.pbar.done .pfill { background: linear-gradient(90deg, #2ea043, #5bd96b); }
+.pbar.bad .pfill { background: #d1453b; width: 100% !important; }
+.pbar.stopped .pfill { background: #8b949e; }
 .dlg.err { background: #aa0000; color: #fff; }
 .dlg h3 { margin: 0; text-align: center; font-size: 15px; }
 .dlg .body { overflow: auto; white-space: pre-wrap; word-break: break-word; min-height: 0; }
@@ -837,28 +847,35 @@ function showRelated(j, smb) {
   upd();
 }
 function showPkgQueue() {
-  const box = h('pre', { style: 'margin:0;white-space:pre-wrap;max-height:50vh;overflow:auto' });
+  const box = h('pre', { class: 'pq', style: 'margin:0;max-height:60vh;overflow:auto' });
   dialog(t('pkgTitle'), [box], [
     { label: t('cancel'), fn: () => { api('/api/pkg/cancel', {}).catch(() => {}); } },
     { label: t('close'), primary: true, fn: closeDlg }], 'wide fit');
   dlgClose = () => clearTimeout(pollTimer);
   const stName = { queued: 'stQueued', registering: 'stRegistering', installing: 'stInstalling', done: 'stDone', already_installed: 'stAlready', failed: 'stFailed', cancelled: 'stCancelled' };
+  const pct = (done, total) => total > 0 ? Math.min(100, Math.floor(100 * done / total)) : 0;
+  const bar = (pc, cls, big) => h('div', { class: 'pbar ' + (cls || '') + (big ? ' big' : '') }, h('div', { class: 'pfill', style: 'width:' + pc + '%' }));
   const tick = async () => {
     let j;
     try { j = await api('/api/pkg'); } catch (e) { pollTimer = setTimeout(tick, 1500); return; }
-    const bar = (done, total) => {
-      const pc = total > 0 ? Math.min(100, Math.floor(100 * done / total)) : 0, W = 24, k = Math.round(W * pc / 100);
-      return '\u2593'.repeat(k) + '\u2591'.repeat(W - k) + ' ' + pc + '%';
-    };
     const shown = j.items.slice(-30);
     let sd = 0, st = 0;
     for (const i of shown) { st += i.total; sd += i.st === 'done' || i.st === 'already_installed' ? i.total : (i.st === 'installing' ? i.done : 0); }
-    const head = shown.length > 1 ? t('pkgTotal') + ' ' + bar(sd, st) + '\n\n' : '';
-    box.textContent = head + shown.map(i => {
-      const run = i.st === 'installing';
+    const nodes = [];
+    if (shown.length > 1) {
+      const pc = pct(sd, st);
+      nodes.push(h('div', { class: 'pitem' }, h('div', { class: 'pline' }, h('b', null, t('pkgTotal')), h('b', null, pc + '%')), bar(pc, '', true)));
+    }
+    for (const i of shown) {
       const full = i.st === 'done' || i.st === 'already_installed';
-      return i.n + '\n    ' + t(stName[i.st] || 'stQueued') + (i.msg ? '  ' + i.msg : '') + (run || full ? '\n    ' + bar(full ? i.total : i.done, i.total) : '');
-    }).join('\n');
+      const pc = full ? 100 : (i.st === 'installing' ? pct(i.done, i.total) : 0);
+      const cls = full ? 'done' : i.st === 'failed' ? 'bad' : i.st === 'cancelled' ? 'stopped' : '';
+      nodes.push(h('div', { class: 'pitem' },
+        h('div', { class: 'pname' }, i.n),
+        h('div', { class: 'pline' }, h('span', null, t(stName[i.st] || 'stQueued') + (i.msg ? '  ' + i.msg : '')), h('span', null, i.st === 'installing' || full ? pc + '%' : '')),
+        bar(pc, cls)));
+    }
+    box.replaceChildren(...nodes);
     pollTimer = setTimeout(tick, 1000);
   };
   tick();
