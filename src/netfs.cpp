@@ -148,6 +148,7 @@ std::string netfs_map(const std::string& root, const std::string& smb_path) {
 #ifdef HOST_TEST
 bool netfs_root(std::string&, std::string& err, bool) { err = "no_fw"; return false; }
 bool netfs_is_fuse_path(const std::string&) { return false; }
+void netfs_idle() {}
 #else
 
 #define FUSE_USE_VERSION 26
@@ -337,7 +338,7 @@ __attribute__((no_stack_protector)) static int fuse_patch(void *td) {
 
 std::mutex g_mtx;
 // Два возможных монтирования: [0] в /data/pkg, [1] на флешке. Каждое живёт до перезагрузки консоли.
-struct Mnt { struct fuse* fuse = nullptr; std::string root; bool mounted = false; };
+struct Mnt { struct fuse* fuse = nullptr; char* mountpoint = nullptr; std::string root; bool mounted = false; };
 Mnt g_mnt[2];
 std::string g_fail;
 
@@ -384,8 +385,16 @@ void* fuse_thread(void* arg) {
     app_log("netfs: %s: обслуживание запущено", m->root.c_str());
     int r = fuse_loop(m->fuse);
     app_log("netfs: fuse_loop вернул %d", r);
-    std::lock_guard<std::mutex> l(g_mtx);
-    m->mounted = false;
+    // цикл кончился (ядро закрыло монтирование): освобождаем устройство /dev/fuseN, их всего 8
+    struct fuse* f = m->fuse;
+    char* mp = m->mountpoint;
+    {
+        std::lock_guard<std::mutex> l(g_mtx);
+        m->mounted = false;
+        m->fuse = nullptr;
+        m->mountpoint = nullptr;
+    }
+    if (f) fuse_teardown(f, mp);
     return nullptr;
 }
 
@@ -484,7 +493,7 @@ bool netfs_root(std::string& root, std::string& err, bool) {
         char* mountpoint = nullptr;
         int mt = 0;
         M.fuse = fuse_setup(7, argv, &ops, sizeof(ops), &mountpoint, &mt, nullptr);
-        if (M.fuse) { mnt = c; break; }
+        if (M.fuse) { mnt = c; M.mountpoint = mountpoint; break; }
         bool en = false; probe_devices(&en);
         app_log("netfs: ядро отказалось монтировать %s%s", c.c_str(), en ? " (нужна перезагрузка payload)" : "");
         if (en) { err = "reload"; return false; }
@@ -498,5 +507,18 @@ bool netfs_root(std::string& root, std::string& err, bool) {
     app_log("netfs: смонтировано в %s", mnt.c_str());
     root = M.root;
     return true;
+}
+
+void netfs_idle() {
+    std::string root;
+    {
+        std::lock_guard<std::mutex> l(g_mtx);
+        if (!g_mnt[0].mounted) return;
+        root = g_mnt[0].root;
+    }
+    errno = 0;
+    int rc = unmount(root.c_str(), 0);
+    app_log("netfs: размонтирование %s -> %d (errno %d)%s", root.c_str(), rc, rc ? errno : 0, rc ? ": ядро не даёт, монтирование остаётся" : "");
+    // при успехе ядро закрывает монтирование, цикл FUSE завершается сам и освобождает устройство
 }
 #endif

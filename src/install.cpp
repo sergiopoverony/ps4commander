@@ -166,6 +166,7 @@ int bgft_register(const Item& it, int* task) {
     *task = 1; return 0;
 }
 int bgft_start(int) { return 0; }
+void bgft_cancel(int task) { app_log("BGFT: задача %d: остановка и снятие с регистрации", task); }
 int bgft_progress(int, uint64_t total, uint64_t* done, int* err) {
     static uint64_t d = 0;
     d += total / 4 + 1; if (d > total) d = total;
@@ -184,6 +185,7 @@ typedef int (*reg_fn)(BgftParamEx*, int*);
 typedef int (*start_fn)(int);
 typedef int (*prog_fn)(int, BgftProgress*);
 init_fn g_init; reg_fn g_reg; start_fn g_start; prog_fn g_prog;
+start_fn g_bstop, g_bunreg;   // остановка и снятие задачи с регистрации (необязательные)
 bool g_loaded = false, g_ok = false;
 
 void* find_sym(int h, const char* a, const char* b) {
@@ -210,7 +212,9 @@ bool bgft_load() {
     g_reg = (reg_fn)find_sym(h, "sceBgftServiceIntDownloadRegisterTaskByStorageEx", "sceBgftDownloadRegisterTaskByStorageEx");
     g_start = (start_fn)find_sym(h, "sceBgftServiceDownloadStartTask", "sceBgftDownloadStartTask");
     g_prog = (prog_fn)find_sym(h, "sceBgftServiceDownloadGetProgress", "sceBgftDownloadGetProgress");
-    app_log("BGFT: init=%d reg=%d start=%d progress=%d", !!g_init, !!g_reg, !!g_start, !!g_prog);
+    g_bstop = (start_fn)find_sym(h, "sceBgftServiceDownloadStopTask", "sceBgftDownloadStopTask");
+    g_bunreg = (start_fn)find_sym(h, "sceBgftServiceDownloadUnregisterTask", "sceBgftDownloadUnregisterTask");
+    app_log("BGFT: init=%d reg=%d start=%d progress=%d stop=%d unregister=%d", !!g_init, !!g_reg, !!g_start, !!g_prog, !!g_bstop, !!g_bunreg);
     if (!g_init || !g_reg || !g_start || !g_prog) return false;
     // метка на случай падения init: следующий запуск этой версии пропустит init
     std::string marker = std::string(DATA_DIR) + "/bgft_init.marker";
@@ -248,6 +252,11 @@ int bgft_register(const Item& it, int* task) {
     return g_reg(&pe, task);
 }
 int bgft_start(int task) { return g_start(task); }
+// Останавливает задачу и снимает её с регистрации: иначе система помнит её, и новая установка того же пакета даёт 0x80990086.
+void bgft_cancel(int task) {
+    int a = g_bstop ? g_bstop(task) : -1, b = g_bunreg ? g_bunreg(task) : -1;
+    app_log("BGFT: задача %d: остановка 0x%08X%s, снятие с регистрации 0x%08X%s", task, (unsigned)a, g_bstop ? "" : " (функции нет)", (unsigned)b, g_bunreg ? "" : " (функции нет)");
+}
 int bgft_progress(int task, uint64_t, uint64_t* done, int* err) {
     BgftProgress p;
     memset(&p, 0, sizeof(p));
@@ -313,7 +322,7 @@ int run_item_inner(Item* it, bool final_try) {
     if ((unsigned)r == 0x8099006Au && !final_try) { app_log("установка %s: регистрация %s (источник отклонён)", it->name.c_str(), hx(r).c_str()); return kSourceRefused; }
     if (r != 0) { set(it, "failed", "register " + hx(r)); app_log("установка %s: регистрация %s", it->name.c_str(), hx(r).c_str()); return 0; }
     r = bgft_start(task);
-    if (r != 0) { set(it, "failed", "start " + hx(r)); return 0; }
+    if (r != 0) { set(it, "failed", "start " + hx(r)); bgft_cancel(task); return 0; }
     set(it, "installing");
     uint64_t last = 0;
     int stall = 0;
@@ -322,11 +331,12 @@ int run_item_inner(Item* it, bool final_try) {
         keep_awake_tick();
         uint64_t d = 0; int err = 0;
         int fin = bgft_progress(task, it->total, &d, &err);
-        if (err != 0) { set(it, "failed", hx(err)); app_log("установка %s: ошибка %s", it->name.c_str(), hx(err).c_str()); notify("ps4commander: ошибка установки %s %s", hx(err).c_str(), it->cid.c_str()); return 0; }
+        if (err != 0) { set(it, "failed", hx(err)); app_log("установка %s: ошибка %s", it->name.c_str(), hx(err).c_str()); notify("ps4commander: ошибка установки %s %s", hx(err).c_str(), it->cid.c_str()); bgft_cancel(task); return 0; }
         { std::lock_guard<std::mutex> l(g_mu); it->done = d; }
         if (fin > 0) { set(it, "done"); return 0; }
-        if (d != last) { last = d; stall = 0; } else if (++stall >= STALL_TICKS) { set(it, "failed", "stalled"); return 0; }
+        if (d != last) { last = d; stall = 0; } else if (++stall >= STALL_TICKS) { set(it, "failed", "stalled"); bgft_cancel(task); return 0; }
     }
+    bgft_cancel(task);
     set(it, "cancelled");
     return 0;
 }
@@ -347,10 +357,12 @@ void worker() {
         {
             std::lock_guard<std::mutex> l(g_mu);
             fin = !any_active();
+            if (fin && g_cancel) g_items.clear();   // установку отменили: очередь начинаем с чистого листа
             if (fin) g_cancel = false;
             for (auto& i : g_items) if (i.status == "failed") bad = true;
             last = it->name;
         }
+        if (fin) netfs_idle();   // очередь закончилась: пробуем отмонтировать папку FUSE
         if (fin && !bad) notify("ps4commander: установка завершена (%s)", last.c_str());
     }
 }
@@ -371,7 +383,7 @@ bool install_start(const std::vector<std::string>& paths, std::string& err) {
     }
     if (!bgft_load()) { err = "no_bgft"; return false; }
     std::lock_guard<std::mutex> l(g_mu);
-    if (!any_active()) { while (g_items.size() + add.size() > kMaxItems && !g_items.empty()) g_items.pop_front(); }
+    if (!any_active()) g_items.clear();   // прошлая очередь (готово, ошибки, отмена) не нужна: новая установка с чистого листа
     else if (g_items.size() + add.size() > kMaxItems) { err = "busy"; return false; }
     for (auto& i : add) {
         bool dup = false;
@@ -398,6 +410,7 @@ std::string install_json() {
 
 void install_cancel() {
     std::lock_guard<std::mutex> l(g_mu);
+    if (!any_active()) return;   // отменять нечего (иначе флаг отмены остался бы до следующей установки)
     g_cancel = true;
     for (auto& i : g_items) if (i.status == "queued") i.status = "cancelled";
     g_cv.notify_all();

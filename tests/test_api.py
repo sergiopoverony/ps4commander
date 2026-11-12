@@ -370,6 +370,24 @@ try:
     link = '/tmp/ps4commander_test_data/links/UP0000-CUSA00000_00-TESTTESTTESTTEST.pkg'
     check('pkg: для длинного пути создана короткая ссылка', os.path.islink(link) and os.readlink(link).endswith('Game.pkg'), os.path.lexists(link))
     check('pkg: длинный путь установлен', [i['st'] for i in j['items']][-1] == 'done', j)
+    check('pkg: новая установка начинает очередь с чистого листа', len(j['items']) == 1, j)
+    # отмена: задача снимается в системе, очередь обнуляется
+    st, j = post('/api/pkg/install', {'paths': [ROOT + '/good.pkg', ROOT + '/good.pkg'.replace('good', 'fail'), ROOT + '/dup.pkg']})
+    st, jc = post('/api/pkg/cancel', {})
+    t0 = time.time()
+    while time.time() - t0 < 20:
+        st, j = get('/api/pkg')
+        if not j['active']: break
+        time.sleep(0.1)
+    check('pkg: после отмены очередь пуста', j['items'] == [], j)
+    st, j = post('/api/pkg/install', {'paths': [ROOT + '/good.pkg']})
+    check('pkg: после отмены можно ставить снова', st == 200, (st, j))
+    t0 = time.time()
+    while time.time() - t0 < 20:
+        st, j = get('/api/pkg')
+        if not j['active']: break
+        time.sleep(0.1)
+    check('pkg: повторная установка после отмены прошла', [i['st'] for i in j['items']] == ['done'], j)
     st, _, _ = raw('/p/UP0000-CUSA00000_00-TESTTESTTESTTEST')
     check('/p/<id>: вне очереди недоступен', st == 404, st)
     st, j = post('/quit')

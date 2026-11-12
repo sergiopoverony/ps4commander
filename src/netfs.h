@@ -25,3 +25,6 @@ std::string netfs_map(const std::string& root, const std::string& smb_path);
 
 // Эта папка - точка монтирования FUSE (в списке дисков её не показываем и не трогаем: у умершего монтирования stat зависает).
 bool netfs_is_fuse_path(const std::string& p);
+
+// Установка закончилась: пробует отмонтировать папку FUSE (ядро может отказать - тогда монтирование остаётся и используется снова).
+void netfs_idle();
