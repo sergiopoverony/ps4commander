@@ -337,9 +337,27 @@ try:
         pg.reload()
         pg.wait_for_function('()=>stateReady')
         check('старт: слева /data, справа подключённый USB', pg.evaluate('()=>[panels[0].path,panels[1].path]') == ['/data', '/mnt/usb1'], pg.evaluate('()=>[panels[0].path,panels[1].path]'))
+        pg.unroute('**/api/state')
+        pg.route('**/api/state', lambda route: route.fulfill(content_type='application/json', body='{"l":"/data","r":"/data/games"}'))
+        pg.reload(); pg.wait_for_function('()=>stateReady')
+        check('правая панель: восстанавливается последний путь (не диск)', pg.evaluate('()=>panels[1].path') == '/data/games', pg.evaluate('()=>panels[1].path'))
+        pg.unroute('**/api/state')
+        pg.route('**/api/state', lambda route: route.fulfill(content_type='application/json', body='{"l":"/data","r":"/mnt/usb5/games"}'))
+        pg.reload(); pg.wait_for_function('()=>stateReady')
+        check('правая панель: отключённый USB - панель пустая', pg.evaluate('()=>[panels[1].loaded,panels[1].view.length,panels[1].head.textContent]') == [False, 0, ''], pg.evaluate('()=>[panels[1].loaded,panels[1].view.length,panels[1].head.textContent]'))
         pg.unroute('**/api/roots'); pg.unroute('**/api/ls*'); pg.unroute('**/api/state')
         pg.reload()
         pg.wait_for_function('()=>stateReady')
+
+        # меню: тема и язык в одной строке, root-галочка внизу под кнопками
+        pg.keyboard.press('F10')
+        pg.wait_for_selector('.dlg .mrow')
+        check('меню: тема и язык на одной линии', pg.evaluate('()=>{const s=[...document.querySelectorAll(".dlg .mrow select")].map(e=>Math.round(e.getBoundingClientRect().top));return s.length===2&&s[0]===s[1]}'))
+        check('меню: галочка root-прав ниже кнопок', pg.evaluate('()=>{const a=document.querySelector(".dlg .rootbox").getBoundingClientRect().top,b=[...document.querySelectorAll(".dlg .btns button")].find(x=>/Help|Помощь/.test(x.textContent)).getBoundingClientRect().bottom;return a>=b}'))
+        pg.get_by_role('button', name='Support the project').click()
+        pg.wait_for_selector('.dlg .qrbox img')
+        check('поддержать проект: QR загружен', pg.evaluate('()=>{const i=document.querySelector(".qrbox img");return i.complete&&i.naturalWidth>100}'))
+        pg.evaluate('()=>closeDlg()')
 
         # язык и тема
         pg.keyboard.press('F10')

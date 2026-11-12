@@ -15,7 +15,11 @@ def arr(name, data):
         name, ',\n'.join(lines), name, len(data))
 
 
-html = open(os.path.join(root, 'web', 'index.html'), encoding='utf-8').read().replace('__VERSION__', ver).encode('utf-8')
+html = open(os.path.join(root, 'web', 'index.html'), encoding='utf-8').read().replace('__VERSION__', ver)
+import base64
+for ph, fn in (('__QR_RU__', 'qr_sbp.png'), ('__QR_EN__', 'qr_paypal.png')):
+    html = html.replace(ph, 'data:image/png;base64,' + base64.b64encode(open(os.path.join(root, 'web', fn), 'rb').read()).decode())
+html = html.encode('utf-8')
 os.makedirs(os.path.dirname(out), exist_ok=True)
 with open(out, 'w') as f:
     f.write('// Сгенерировано tools/embed.py. Не редактировать.\n#pragma once\n')
