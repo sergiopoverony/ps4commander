@@ -196,6 +196,57 @@ try:
     check('smb: без FUSE установка не копирует файл, а сообщает причину', [i['st'] for i in j['items']] == ['failed'] and j['items'][0]['msg'] == 'fuse: no_fw' and 'stage' not in log and 'копирование' not in log, (j, log[-300:]))
     check('smb: временных копий нет', not os.path.exists('/tmp/ps4commander_test_data/stage'))
     check('smb: /p/ нет', get('/p/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS')[0] == 404)
+    # связанные пакеты: патчи, DLC, русификатор рядом и в соседних папках
+    import struct
+    def mkpkg(rel, cid, ctype, flags, title, ver, pkg_size=None, extra=b''):
+        def psf():
+            ents = [(b'APP_VER', ver.encode() + b'\0'), (b'TITLE', title.encode() + b'\0')]
+            keys = b''.join(k + b'\0' for k, _ in ents)
+            kofs, dofs, cnt = 20 + 16 * len(ents), 0, len(ents)
+            tab, data, ko, do = b'', b'', 0, 0
+            for k, v in ents:
+                tab += struct.pack('<HHIII', ko, 0x204, len(v), len(v), do)
+                ko += len(k) + 1; data += v; do += len(v)
+            dofs = kofs + len(keys)
+            return b'\0PSF' + struct.pack('<IIII', 0x101, kofs, dofs, cnt) + tab + keys + data
+        sfo = psf()
+        buf = bytearray(0x1000 + len(extra))
+        buf[0:4] = b'\x7fCNT'
+        buf[0x10:0x14] = struct.pack('>I', 1)
+        buf[0x18:0x1c] = struct.pack('>I', 0x800)
+        buf[0x40:0x40 + 36] = cid.encode()
+        buf[0x74:0x78] = struct.pack('>I', ctype)
+        buf[0x78:0x7c] = struct.pack('>I', flags)
+        buf[0x430:0x438] = struct.pack('>Q', pkg_size if pkg_size else len(buf))
+        buf[0x800:0x820] = struct.pack('>IIIIIIII', 0x1000, 0, 0, 0, 0xA00, len(sfo), 0, 0)
+        buf[0xA00:0xA00 + len(sfo)] = sfo
+        os.makedirs(os.path.dirname(SHARE + rel), exist_ok=True)
+        open(SHARE + rel, 'wb').write(bytes(buf))
+    C = 'UP0000-CUSA77777_00-TESTGAMETESTGAME'
+    mkpkg('/lib/game/main/Game.pkg', C, 0x1A, 0, 'Test Game', '01.00', extra=b'\1' * 5000)
+    mkpkg('/lib/game/patch/Patch_101.pkg', C, 0x1A, 0x40000000, 'Test Game', '01.01', extra=b'\2' * 3000)
+    mkpkg('/lib/game/patch/Patch_102.pkg', C, 0x1A, 0x40000000, 'Test Game', '01.02', extra=b'\3' * 3100)
+    mkpkg('/lib/game/patch/Patch_103_broken.pkg', C, 0x1A, 0x40000000, 'Test Game', '01.03', pkg_size=10 ** 6, extra=b'\4' * 100)
+    mkpkg('/lib/game/dlc/Pack.pkg', 'UP0000-CUSA77777_00-TESTDLCTESTDLC00', 0x1B, 0, 'Test DLC', '01.00', extra=b'\5' * 2000)
+    mkpkg('/lib/game/rus/Russian.pkg', 'UP0000-CUSA77777_00-TESTRUSTESTRUS00', 0x1A, 0, 'Test Game RUS', '01.00', extra=b'\6' * 1500)
+    mkpkg('/lib/game/other/Other.pkg', 'UP0000-CUSA88888_00-OTHERGAMEOTHERG0', 0x1A, 0, 'Other Game', '01.00', extra=b'\7' * 800)
+    open(SHARE + '/lib/game/other/readme.txt', 'w').write('x')
+    st, j = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/main/Game.pkg'))
+    names = [i['n'] for i in j.get('items', [])] if st == 200 else []
+    check('pkg: найдены связанные, порядок игра-патч-DLC-русификатор', names[:4] == ['Game.pkg', 'Patch_102.pkg', 'Pack.pkg', 'Russian.pkg'], (st, names))
+    byname = {i['n']: i for i in j.get('items', [])}
+    check('pkg: ставятся по умолчанию основа, новейший патч, DLC, русификатор', all(byname[n]['c'] for n in names[:4]), j)
+    check('pkg: старый патч пропущен с причиной', byname['Patch_101.pkg']['c'] is False and byname['Patch_101.pkg']['why'] == 'newer_patch:1.02', byname.get('Patch_101.pkg'))
+    check('pkg: недокачанный пропущен', byname['Patch_103_broken.pkg']['c'] is False and byname['Patch_103_broken.pkg']['why'] == 'incomplete', byname.get('Patch_103_broken.pkg'))
+    check('pkg: чужая игра не попала в список', 'Other.pkg' not in byname, names)
+    check('pkg: тип и версия из заголовка', byname['Game.pkg']['k'] == 'game' and byname['Patch_102.pkg']['k'] == 'patch' and byname['Patch_102.pkg']['v'] == '01.02' and byname['Pack.pkg']['k'] == 'dlc' and j['title'] == 'Test Game' and j['tid'] == 'CUSA77777', j)
+    st, j2 = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/patch/Patch_101.pkg'))
+    b2 = {i['n']: i for i in j2.get('items', [])}
+    check('pkg: выбранный пакет ставится всегда, даже если он старый патч', st == 200 and b2['Patch_101.pkg']['c'] and b2['Patch_101.pkg']['self'], j2)
+    st, j3 = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/other/Other.pkg'))
+    check('pkg: у игры без связанных один пакет', st == 200 and [i['n'] for i in j3['items']] == ['Other.pkg'], j3)
+    st, j4 = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/other/readme.txt'))
+    check('pkg: не pkg - пустой список, без ошибки', st == 200 and j4['items'] == [], (st, j4))
     # операции FUSE-папки (то, что видит системный установщик)
     st, j = get('/api/_nf?op=ls&path=/')
     check('fuse: корень - список шар', st == 200 and j['r'] == 0 and 'nas' in j['n'], j)

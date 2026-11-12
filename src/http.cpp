@@ -3,6 +3,7 @@
 #include "fs.h"
 #include "install.h"
 #include "netfs.h"
+#include "pkginfo.h"
 #include "smb.h"
 #include "vfs.h"
 #include "jobs.h"
@@ -512,6 +513,13 @@ static void handle(int fd) {
             }
             respond_json(fd, 200, out);
 #endif
+        } else if (path == "/api/pkg/related") {
+            std::string n = path_param(query, err);
+            if (n.empty()) respond_err(fd, 400, err);
+            else {
+                std::string js = pi_related_json(n, err);
+                if (js.empty()) respond_err(fd, err_status(err), err); else respond_json(fd, 200, js);
+            }
         } else if (path == "/api/download") {
             std::string n = path_param(query, err);
             if (n.empty()) respond_err(fd, 400, err); else do_download(fd, n, qget(query, "inline") == "1", range_hdr, is_head);

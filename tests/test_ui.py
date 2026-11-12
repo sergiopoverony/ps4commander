@@ -235,6 +235,46 @@ try:
         pg.keyboard.press('Escape')
         pg.wait_for_function('()=>!overlay.classList.contains("on")')
 
+        # окно выбора: рядом лежат патч и DLC той же игры
+        import struct
+        def mkpkg(rel, cid, ctype, flags, title, ver):
+            ents = [(b'APP_VER', ver.encode() + b'\0'), (b'TITLE', title.encode() + b'\0')]
+            keys = b''.join(k + b'\0' for k, _ in ents)
+            kofs = 20 + 16 * len(ents)
+            tab, data, ko, do = b'', b'', 0, 0
+            for k, v in ents:
+                tab += struct.pack('<HHIII', ko, 0x204, len(v), len(v), do); ko += len(k) + 1; data += v; do += len(v)
+            sfo = b'\0PSF' + struct.pack('<IIII', 0x101, kofs, kofs + len(keys), len(ents)) + tab + keys + data
+            b = bytearray(0x1000 + 100)
+            b[0:4] = b'\x7fCNT'; b[0x10:0x14] = struct.pack('>I', 1); b[0x18:0x1c] = struct.pack('>I', 0x800)
+            b[0x40:0x40 + 36] = cid.encode(); b[0x74:0x78] = struct.pack('>I', ctype); b[0x78:0x7c] = struct.pack('>I', flags)
+            b[0x430:0x438] = struct.pack('>Q', len(b)); b[0x800:0x820] = struct.pack('>IIIIIIII', 0x1000, 0, 0, 0, 0xA00, len(sfo), 0, 0)
+            b[0xA00:0xA00 + len(sfo)] = sfo
+            os.makedirs(os.path.dirname(ROOT + rel), exist_ok=True)
+            open(ROOT + rel, 'wb').write(bytes(b))
+        mkpkg('/lib/main/Game.pkg', 'UP0000-CUSA55555_00-UITESTUITESTUITE', 0x1A, 0, 'UI Game', '01.00')
+        mkpkg('/lib/upd/Patch.pkg', 'UP0000-CUSA55555_00-UITESTUITESTUITE', 0x1A, 0x40000000, 'UI Game', '01.05')
+        mkpkg('/lib/dlc/Extra.pkg', 'UP0000-CUSA55555_00-UIDLCUIDLCUIDLC0', 0x1B, 0, 'UI DLC', '01.00')
+        saved_path = pg.evaluate('()=>panels[0].path')
+        pg.evaluate('(p)=>{panels[0].path=p;return refreshAll()}', ROOT + '/lib/main')
+        pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="Game.pkg")')
+        pg.evaluate('()=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n==="Game.pkg");render(p)}')
+        pg.keyboard.press('Enter')
+        pg.wait_for_function('()=>document.querySelectorAll(".dlg input[type=checkbox]").length===3', timeout=10000)
+        txt = pg.locator('.dlg').inner_text()
+        check('окно выбора: игра, патч и DLC с галочками', 'Game.pkg' in txt and 'Patch.pkg' in txt and 'Extra.pkg' in txt and pg.locator('.dlg input:checked').count() == 3, txt)
+        pg.locator('.dlg input[type=checkbox]').nth(2).uncheck()
+        check('счётчик выбранных обновился', '(2)' in pg.locator('.dlg button.primary').inner_text(), pg.locator('.dlg button.primary').inner_text())
+        pg.locator('.dlg button.primary').click()
+        pg.wait_for_function('()=>/Game.pkg/.test(document.querySelector(".dlg pre")&&document.querySelector(".dlg pre").textContent||"")', timeout=10000)
+        pg.wait_for_function('()=>{const t=document.querySelector(".dlg pre").textContent;return /Patch.pkg/.test(t)&&!/Extra.pkg/.test(t)}', timeout=10000)
+        check('в очередь ушли только отмеченные, по порядку', pg.evaluate('()=>document.querySelector(".dlg pre").textContent.indexOf("Game.pkg")<document.querySelector(".dlg pre").textContent.indexOf("Patch.pkg")'))
+        pg.wait_for_function('()=>(document.querySelector(".dlg pre").textContent.match(/installed|установлено/g)||[]).length>=2', timeout=20000)
+        pg.keyboard.press('Escape')
+        pg.wait_for_function('()=>!overlay.classList.contains("on")')
+        pg.evaluate('(p)=>{panels[0].path=p;return refreshAll()}', saved_path)
+        pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="inner")')
+
         # скачивание папки ZIP-архивом
         pg.evaluate('()=>{const p=panels[0];p.sel.clear();p.cur=p.view.findIndex(e=>e.n==="inner");render(p)}')
         with pg.expect_download(timeout=15000) as dl:

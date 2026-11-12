@@ -131,6 +131,7 @@ const TR = {
     binaryNoEdit:'This looks like a binary file; editing is disabled.', saved:'Saved', unsavedQ:'Close without saving?', save:'Save', newFileName:'New file name:', exists:'Already exists',
     typeDir:'Folder', typeFile:'File', typeLink:'Symbolic link', typeOther:'Other', fPath:'Path', fType:'Type', fSize:'Size', fMode:'Permissions', fOwner:'Owner', fTime:'Modified', fTarget:'Link target',
     objects:'objects', total:'Total', info:'Info',
+    pkgFinding:'Looking for related packages', pkgFindingText:'Searching this folder and neighbouring folders for patches, DLC and other files of the same game...', pkgRelTitle:'Install with related packages', pkgRelHead:'Found for {tid} {title}. Tick what to install (the order is fixed: game, patches, DLC, localizations).', kGame:'game', kPatch:'patch', kDlc:'DLC', kRus:'localization', pkgTrunc:'The search was cut short (too many files), some packages may be missing.', pkgSel:'Install selected ({n})', why_backport_fw:'backport: not for this firmware', why_newer_patch:'a newer patch exists ({v})', why_incomplete:'not fully downloaded', pkgNoSel:'Nothing is selected',
     install:'Install PKG', installQ:'Install {n} via the system installer?', pkgTitle:'Package installation', pkgNone:'No .pkg files selected',
     stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
     zipStarted:'Folder download started as a ZIP archive (built on the fly, no temporary files)',
@@ -173,6 +174,7 @@ const TR = {
     binaryNoEdit:'Похоже на двоичный файл; правка отключена.', saved:'Сохранено', unsavedQ:'Закрыть без сохранения?', save:'Сохранить', newFileName:'Имя нового файла:', exists:'Уже существует',
     typeDir:'Папка', typeFile:'Файл', typeLink:'Символическая ссылка', typeOther:'Другое', fPath:'Путь', fType:'Тип', fSize:'Размер', fMode:'Права', fOwner:'Владелец', fTime:'Изменён', fTarget:'Цель ссылки',
     objects:'объектов', total:'Всего', info:'Свойства',
+    pkgFinding:'Поиск связанных пакетов', pkgFindingText:'Ищу в этой папке и соседних патчи, DLC и другие файлы этой же игры...', pkgRelTitle:'Установка со связанными пакетами', pkgRelHead:'Найдено для {tid} {title}. Отметьте, что ставить (порядок фиксированный: игра, патчи, DLC, русификаторы).', kGame:'игра', kPatch:'патч', kDlc:'DLC', kRus:'русификатор', pkgTrunc:'Поиск остановлен (слишком много файлов), часть пакетов могла не найтись.', pkgSel:'Установить выбранные ({n})', why_backport_fw:'backport: не для этой прошивки', why_newer_patch:'есть более новый патч ({v})', why_incomplete:'не докачан', pkgNoSel:'Ничего не выбрано',
     install:'Установить PKG', installQ:'Установить {n} штатным установщиком?', pkgTitle:'Установка пакетов', pkgNone:'Нет выбранных .pkg файлов',
     stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
     zipStarted:'Скачивание папки началось в виде ZIP-архива (собирается на лету, временных файлов нет)',
@@ -756,17 +758,57 @@ function doNewFile() {
 }
 
 // ---------- установка PKG ----------
+function installPaths(paths) {
+  return api('/api/pkg/install', { paths }).then(() => showPkgQueue()).catch(e => messageBox(errText(e.code), true));
+}
 function doInstall(only) {
   const p = panels[active];
   const ts = (only && only.n ? [only] : targets(p)).filter(e => e.t === 'f' && /\.pkg$/i.test(e.n));
   if (!ts.length) { messageBox(t('pkgNone'), true); return; }
-  const n = ts.length === 1 ? '"' + ts[0].n + '"' : ts.length + ' ' + t('items');
-  const note = p.path.startsWith('/smb/') ? '\n\n' + t('installSmbNote') : '';
-  confirmBox(t('install'), t('installQ', { n }) + note, t('install'), async () => {
-    try { await api('/api/pkg/install', { paths: ts.map(e => join(p.path, e.n)) }); }
-    catch (e) { messageBox(errText(e.code), true); return; }
-    showPkgQueue();
+  const plain = () => {
+    const n = ts.length === 1 ? '"' + ts[0].n + '"' : ts.length + ' ' + t('items');
+    const note = p.path.startsWith('/smb/') ? '\n\n' + t('installSmbNote') : '';
+    confirmBox(t('install'), t('installQ', { n }) + note, t('install'), () => installPaths(ts.map(e => join(p.path, e.n))));
+  };
+  if (ts.length !== 1) { plain(); return; }
+  // один пакет: ищем рядом патчи, DLC и прочее той же игры
+  let stop = false;
+  dialog(t('pkgFinding'), [t('pkgFindingText')], [{ label: t('cancel'), fn: closeDlg }]);
+  dlgClose = () => { stop = true; };
+  api('/api/pkg/related?path=' + encodeURIComponent(join(p.path, ts[0].n))).then(j => {
+    if (stop) return;
+    dlgClose = null; closeDlg();
+    if (j.items.length <= 1) plain(); else showRelated(j, p.path.startsWith('/smb/'));
+  }).catch(() => { if (stop) return; dlgClose = null; closeDlg(); plain(); });
+}
+function showRelated(j, smb) {
+  const kinds = ['kGame', 'kPatch', 'kDlc', 'kRus'];
+  const rows = j.items.map(i => {
+    const cb = h('input', { type: 'checkbox' });
+    cb.checked = i.c;
+    let why = '';
+    if (i.why) { const [code, arg] = i.why.split(':'); why = ' - ' + t('why_' + code, { v: arg || '' }); }
+    const label = h('label', { style: 'display:flex;gap:8px;align-items:flex-start;padding:3px 0;cursor:pointer' }, cb,
+      h('span', null, h('b', null, '[' + t(kinds[i.r] || 'kGame') + (i.v ? ' ' + i.v : '') + '] '), i.n, ' (' + fmtSize(i.s) + ')' + why));
+    return { i, cb, label };
   });
+  const count = () => rows.filter(r => r.cb.checked).length;
+  const btn = { label: '', primary: true, fn: () => {
+    const sel = rows.filter(r => r.cb.checked).map(r => r.i.p);
+    if (!sel.length) { messageBox(t('pkgNoSel'), true); return; }
+    closeDlg();
+    installPaths(sel);
+  } };
+  const head = h('div', { style: 'margin-bottom:8px' }, t('pkgRelHead', { tid: j.tid, title: j.title || '' }));
+  const list = h('div', { style: 'max-height:50vh;overflow:auto' }, rows.map(r => r.label));
+  const body = [head, list];
+  if (j.trunc) body.push(h('div', { style: 'margin-top:8px;opacity:.8' }, t('pkgTrunc')));
+  if (smb) body.push(h('div', { style: 'margin-top:8px;opacity:.8;white-space:pre-wrap' }, t('installSmbNote')));
+  const d = dialog(t('pkgRelTitle'), body, [btn, { label: t('cancel'), fn: closeDlg }], 'wide');
+  const primary = d.querySelector('button.primary');
+  const upd = () => { primary.textContent = t('pkgSel', { n: count() }); };
+  rows.forEach(r => r.cb.addEventListener('change', upd));
+  upd();
 }
 function showPkgQueue() {
   const box = h('pre', { style: 'margin:0;white-space:pre-wrap;max-height:50vh;overflow:auto' });

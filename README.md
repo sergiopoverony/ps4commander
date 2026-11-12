@@ -10,6 +10,7 @@ Russian version: [docs/README_ru.md](docs/README_ru.md)
 - Text viewer / hex viewer, image/audio/video preview, built-in text editor (up to 1 MB).
 - Download a folder (or several items) as a ZIP built on the fly, no temporary files (Ctrl+D).
 - Network folders over SMB (SMB2/3, Windows/Samba/NAS shares; the add dialog can scan the local network for servers and list their shares) shown as `/smb/<name>`: browse, view, download, copy/move to and from the console, ZIP, search. Press `N` to add a share; passwords are stored on the console in `/data/ps4commander/smb.json`.
+- Installing a `.pkg` looks for patches, DLC and localizations of the same game next to it (its folder and neighbouring folders, local or SMB) and offers a checklist, with the same rules as ps4installer: order game, patches, DLC, localizations; only the newest patch; backport only on firmware 9 or lower; incomplete downloads are skipped.
 - Install a `.pkg` straight from a network folder: the installer first tries a FUSE folder (mounted on a USB drive if one is plugged in, otherwise directly on a free `/mnt/usbN`; no copying; firmware must be in the fusefs patch table), and never copies the file by itself (if FUSE is not available the install stops with a reason; copy the file with F5 and install it from the disk). The log shows which way was used.
 - Upload (button or drag-and-drop) and download.
 - Recursive file search with masks.
