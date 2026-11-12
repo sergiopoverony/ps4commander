@@ -218,6 +218,22 @@ try:
         pg.wait_for_function('()=>panels[0].entries.some(e=>e.n.startsWith("<img"))')
         check('имя с HTML не исполняется (XSS)', pg.evaluate('()=>window.__xss') is None and pg.locator('.row img').count() == 0)
 
+        # Enter на .pkg предлагает установку (а не просмотр)
+        h = bytearray(0x200); h[0:4] = b'\x7fCNT'; h[0x40:0x40 + 36] = b'UP0000-CUSA00000_00-TESTTESTTESTTEST'
+        open(ROOT + '/docs/game.pkg', 'wb').write(bytes(h))
+        pg.evaluate('()=>refreshAll()')
+        pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="game.pkg")')
+        pg.evaluate('()=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n==="game.pkg");render(p)}')
+        pg.keyboard.press('Enter')
+        pg.wait_for_selector('.dlg')
+        check('Enter на .pkg: предложена установка', 'game.pkg' in pg.locator('.dlg').inner_text() and pg.locator('.viewer').count() == 0, pg.locator('.dlg').inner_text())
+        pg.keyboard.press('Enter')
+        pg.wait_for_function('()=>/game.pkg/.test(document.querySelector(".dlg pre")&&document.querySelector(".dlg pre").textContent||"")', timeout=10000)
+        check('очередь установки показана', True)
+        pg.wait_for_function('()=>/installed|установлено/.test(document.querySelector(".dlg pre").textContent)', timeout=15000)
+        pg.keyboard.press('Escape')
+        pg.wait_for_function('()=>!overlay.classList.contains("on")')
+
         # язык и тема
         pg.keyboard.press('F10')
         pg.select_option('.dlg select >> nth=1', 'ru')

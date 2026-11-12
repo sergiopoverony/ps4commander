@@ -134,7 +134,7 @@ const TR = {
     install:'Install PKG', installQ:'Install {n} via the system installer?', pkgTitle:'Package installation', pkgNone:'No .pkg files selected',
     stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
     helpTitle:'Keys',
-    helpBody:'Tab - switch panel\nUp/Down/PgUp/PgDn/Home/End - move\nEnter - open folder / view file\nBackspace - parent folder\nInsert or Space - select\n+ / - / * - select all / none / invert\nF2 - refresh   F3 - view   F4 - edit text   Shift+F4 - new file\nF5 - copy   F6 - move   Shift+F6 - rename   F7 - new folder\nF8 or Delete - delete   F9 - permissions   I - install .pkg\n+ / - select / deselect by mask   * invert   Ctrl+A all\nCtrl+F or Alt+F7 - find files   Alt+Enter - properties   Ctrl+G - go to path\nF10 or Esc - menu\n\nDrag files from your computer onto a panel to upload them.\nOn a touch screen: tap a row to select the cursor, tap again to open, tap the left cell to mark.'
+    helpBody:'Tab - switch panel\nUp/Down/PgUp/PgDn/Home/End - move\nEnter - open folder / view file / install .pkg\nBackspace - parent folder\nInsert or Space - select\n+ / - / * - select all / none / invert\nF2 - refresh   F3 - view   F4 - edit text   Shift+F4 - new file\nF5 - copy   F6 - move   Shift+F6 - rename   F7 - new folder\nF8 or Delete - delete   F9 - permissions   I - install selected .pkg\n+ / - select / deselect by mask   * invert   Ctrl+A all\nCtrl+F or Alt+F7 - find files   Alt+Enter - properties   Ctrl+G - go to path\nF10 or Esc - menu\n\nDrag files from your computer onto a panel to upload them.\nOn a touch screen: tap a row to select the cursor, tap again to open, tap the left cell to mark.'
   },
   ru: {
     menu:'Меню', help:'Помощь', view:'Просмотр', copy:'Копия', move:'Перенос', rename:'Имя', mkdir:'Папка', del:'Удалить', chmod:'Права',
@@ -166,7 +166,7 @@ const TR = {
     install:'Установить PKG', installQ:'Установить {n} штатным установщиком?', pkgTitle:'Установка пакетов', pkgNone:'Нет выбранных .pkg файлов',
     stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
     helpTitle:'Клавиши',
-    helpBody:'Tab - сменить панель\nВверх/Вниз/PgUp/PgDn/Home/End - перемещение\nEnter - открыть папку / просмотреть файл\nBackspace - на уровень выше\nInsert или Пробел - отметить\n+ / - / * - отметить всё / снять / инвертировать\nF2 - обновить   F3 - просмотр   F4 - правка текста   Shift+F4 - новый файл\nF5 - копировать   F6 - перенести   Shift+F6 - переименовать   F7 - новая папка\nF8 или Delete - удалить   F9 - права   I - установить .pkg\n+ / - отметить / снять по маске   * инвертировать   Ctrl+A всё\nCtrl+F или Alt+F7 - поиск файлов   Alt+Enter - свойства   Ctrl+G - перейти по пути\nF10 или Esc - меню\n\nПеретащите файлы с компьютера на панель, чтобы загрузить их.\nНа сенсорном экране: касание строки ставит курсор, повторное открывает, касание левой ячейки отмечает.'
+    helpBody:'Tab - сменить панель\nВверх/Вниз/PgUp/PgDn/Home/End - перемещение\nEnter - открыть папку / просмотреть файл / установить .pkg\nBackspace - на уровень выше\nInsert или Пробел - отметить\n+ / - / * - отметить всё / снять / инвертировать\nF2 - обновить   F3 - просмотр   F4 - правка текста   Shift+F4 - новый файл\nF5 - копировать   F6 - перенести   Shift+F6 - переименовать   F7 - новая папка\nF8 или Delete - удалить   F9 - права   I - установить отмеченные .pkg\n+ / - отметить / снять по маске   * инвертировать   Ctrl+A всё\nCtrl+F или Alt+F7 - поиск файлов   Alt+Enter - свойства   Ctrl+G - перейти по пути\nF10 или Esc - меню\n\nПеретащите файлы с компьютера на панель, чтобы загрузить их.\nНа сенсорном экране: касание строки ставит курсор, повторное открывает, касание левой ячейки отмечает.'
   }
 };
 let lang = 'en';
@@ -394,6 +394,7 @@ async function openCur(p) {
   if (!e) return;
   if (e.up) { const from = baseName(p.path); await load(p, parentOf(p.path), from); return; }
   if (e.t === 'd' || e.td) { await load(p, join(p.path, e.n), e.n === '..' ? baseName(p.path) : null); return; }
+  if (e.t === 'f' && /\.pkg$/i.test(e.n)) { doInstall(e); return; }
   if (e.t === 'f') viewFile(p, e);
 }
 function goUp(p) { if (p.path !== '/') load(p, parentOf(p.path), baseName(p.path)); }
@@ -714,9 +715,9 @@ function doNewFile() {
 }
 
 // ---------- установка PKG ----------
-function doInstall() {
+function doInstall(only) {
   const p = panels[active];
-  const ts = targets(p).filter(e => e.t === 'f' && /\.pkg$/i.test(e.n));
+  const ts = (only && only.n ? [only] : targets(p)).filter(e => e.t === 'f' && /\.pkg$/i.test(e.n));
   if (!ts.length) { messageBox(t('pkgNone'), true); return; }
   const n = ts.length === 1 ? '"' + ts[0].n + '"' : ts.length + ' ' + t('items');
   confirmBox(t('install'), t('installQ', { n }), t('install'), async () => {
