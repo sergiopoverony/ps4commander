@@ -10,7 +10,7 @@ Russian version: [docs/README_ru.md](docs/README_ru.md)
 - Text viewer / hex viewer, image/audio/video preview, built-in text editor (up to 1 MB).
 - Download a folder (or several items) as a ZIP built on the fly, no temporary files (Ctrl+D).
 - Network folders over SMB (SMB2/3, Windows/Samba/NAS shares; the add dialog can scan the local network for servers and list their shares) shown as `/smb/<name>`: browse, view, download, copy/move to and from the console, ZIP, search. Press `N` to add a share; passwords are stored on the console in `/data/ps4commander/smb.json`.
-- Install a `.pkg` straight from a network folder: the installer first tries a FUSE folder (mounted under `/data/pkg`, or on a USB drive if the kernel refuses; no copying; firmware must be in the fusefs patch table), and otherwise makes a temporary copy that is deleted after the installation. The log shows which way was used.
+- Install a `.pkg` straight from a network folder: the installer first tries a FUSE folder (mounted under `/data/pkg`, or on a USB drive if the kernel refuses; no copying; firmware must be in the fusefs patch table), and never copies the file by itself (if FUSE is not available the install stops with a reason; copy the file with F5 and install it from the disk). The log shows which way was used.
 - Upload (button or drag-and-drop) and download.
 - Recursive file search with masks.
 - Install `.pkg` files via the system installer (BGFT), with a queue and progress (Enter on a `.pkg`).

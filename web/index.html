@@ -132,15 +132,15 @@ const TR = {
     typeDir:'Folder', typeFile:'File', typeLink:'Symbolic link', typeOther:'Other', fPath:'Path', fType:'Type', fSize:'Size', fMode:'Permissions', fOwner:'Owner', fTime:'Modified', fTarget:'Link target',
     objects:'objects', total:'Total', info:'Info',
     install:'Install PKG', installQ:'Install {n} via the system installer?', pkgTitle:'Package installation', pkgNone:'No .pkg files selected',
-    stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stCopying:'copying from the network', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
+    stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
     zipStarted:'Folder download started as a ZIP archive (built on the fly, no temporary files)',
     smbTitle:'Network folders (SMB)', smbAdd:'Add', smbEdit:'Edit', smbDel:'Remove', smbOpen:'Open', smbNone:'No network folders yet',
     smbAlias:'Name (letters, digits, - _ .)', smbHost:'Server address (IP or name)', smbShare:'Share name', smbUser:'User', smbPass:'Password', smbPassKeep:'(leave empty to keep the saved one)', smbDomain:'Domain (optional)',
     smbSave:'Connect and save', smbConnecting:'Connecting...', smbDelQ:'Remove the saved connection "{n}"? Files on the server are not touched.', smbSaved:'Saved',
-    e_smb_auth:'Wrong user name or password', e_smb_share:'Share not found on the server', no_space:'Not enough free space for the temporary copy', short_copy:'The file was copied incompletely',
+    e_smb_auth:'Wrong user name or password', e_smb_share:'Share not found on the server',
     e_bad_alias:'Invalid name', e_bad_host:'Invalid server address', e_bad_share:'Invalid share name', e_ECONNREFUSED:'Connection refused (is SMB enabled on the server?)',
     e_ETIMEDOUT:'Server did not answer in time', e_EHOSTUNREACH:'Server is unreachable', e_ENETUNREACH:'Network is unreachable', e_ECONNRESET:'Connection to the server was lost', e_ENOTCONN:'Not connected to the server',
-    installSmbNote:'The package is on a network folder. The installer first tries to read it through a FUSE folder (no copying; needs a supported firmware), and if that is not possible the file is copied to a disk (needs free space) and deleted after the installation.',
+    installSmbNote:'The package is on a network folder: it is read through a FUSE folder, without copying (needs a supported firmware). If that is not possible, copy it to the console with F5 and install from there.',
     smbFind:'Find servers on the network', smbFinding:'Scanning the network... {d}/{t}', smbFound:'Found servers: {n}', smbFoundNone:'No SMB servers found', smbShares:'List shares', smbSharesN:'Shares found: {n}',
     e_smb_enum:'Could not get the list of shares (try entering the name manually)', e_no_net:'Cannot determine the local network',
     helpTitle:'Keys',
@@ -174,15 +174,15 @@ const TR = {
     typeDir:'Папка', typeFile:'Файл', typeLink:'Символическая ссылка', typeOther:'Другое', fPath:'Путь', fType:'Тип', fSize:'Размер', fMode:'Права', fOwner:'Владелец', fTime:'Изменён', fTarget:'Цель ссылки',
     objects:'объектов', total:'Всего', info:'Свойства',
     install:'Установить PKG', installQ:'Установить {n} штатным установщиком?', pkgTitle:'Установка пакетов', pkgNone:'Нет выбранных .pkg файлов',
-    stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stCopying:'копирование из сети', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
+    stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
     zipStarted:'Скачивание папки началось в виде ZIP-архива (собирается на лету, временных файлов нет)',
     smbTitle:'Сетевые папки (SMB)', smbAdd:'Добавить', smbEdit:'Изменить', smbDel:'Удалить', smbOpen:'Открыть', smbNone:'Сетевых папок пока нет',
     smbAlias:'Имя (буквы, цифры, - _ .)', smbHost:'Адрес сервера (IP или имя)', smbShare:'Имя общей папки', smbUser:'Пользователь', smbPass:'Пароль', smbPassKeep:'(пусто - оставить сохранённый)', smbDomain:'Домен (необязательно)',
     smbSave:'Подключить и сохранить', smbConnecting:'Подключение...', smbDelQ:'Удалить сохранённое подключение «{n}»? Файлы на сервере не затрагиваются.', smbSaved:'Сохранено',
-    e_smb_auth:'Неверный логин или пароль', e_smb_share:'Такой общей папки нет на сервере', no_space:'Не хватает места для временной копии', short_copy:'Файл скопирован не полностью',
+    e_smb_auth:'Неверный логин или пароль', e_smb_share:'Такой общей папки нет на сервере',
     e_bad_alias:'Недопустимое имя', e_bad_host:'Недопустимый адрес сервера', e_bad_share:'Недопустимое имя общей папки', e_ECONNREFUSED:'Соединение отклонено (включён ли SMB на сервере?)',
     e_ETIMEDOUT:'Сервер не ответил вовремя', e_EHOSTUNREACH:'Сервер недоступен', e_ENETUNREACH:'Сеть недоступна', e_ECONNRESET:'Соединение с сервером потеряно', e_ENOTCONN:'Нет соединения с сервером',
-    installSmbNote:'Пакет лежит в сетевой папке. Сначала установщик пробует читать его через папку FUSE (без копирования; нужна поддерживаемая прошивка), а если не получится - файл копируется на диск (нужно свободное место) и после установки удаляется.',
+    installSmbNote:'Пакет лежит в сетевой папке: он читается через папку FUSE, без копирования (нужна поддерживаемая прошивка). Если не получится - скопируйте его на консоль клавишей F5 и ставьте оттуда.',
     smbFind:'Найти серверы в сети', smbFinding:'Поиск в сети... {d}/{t}', smbFound:'Найдено серверов: {n}', smbFoundNone:'SMB-серверов не найдено', smbShares:'Показать папки', smbSharesN:'Найдено папок: {n}',
     e_smb_enum:'Не удалось получить список папок (введите имя вручную)', e_no_net:'Не удалось определить локальную сеть',
     helpTitle:'Клавиши',
@@ -774,13 +774,13 @@ function showPkgQueue() {
     { label: t('cancel'), fn: () => { api('/api/pkg/cancel', {}).catch(() => {}); } },
     { label: t('close'), primary: true, fn: closeDlg }], 'wide');
   dlgClose = () => clearTimeout(pollTimer);
-  const stName = { queued: 'stQueued', registering: 'stRegistering', copying: 'stCopying', installing: 'stInstalling', done: 'stDone', already_installed: 'stAlready', failed: 'stFailed', cancelled: 'stCancelled' };
+  const stName = { queued: 'stQueued', registering: 'stRegistering', installing: 'stInstalling', done: 'stDone', already_installed: 'stAlready', failed: 'stFailed', cancelled: 'stCancelled' };
   const tick = async () => {
     let j;
     try { j = await api('/api/pkg'); } catch (e) { pollTimer = setTimeout(tick, 1500); return; }
     box.textContent = j.items.slice(-30).map(i => {
       const pc = i.total > 0 ? ' ' + Math.min(100, Math.floor(100 * i.done / i.total)) + '%' : '';
-      return i.n + '\n    ' + t(stName[i.st] || 'stQueued') + ((i.st === 'installing' || i.st === 'copying') ? pc : '') + (i.msg ? '  ' + i.msg : '');
+      return i.n + '\n    ' + t(stName[i.st] || 'stQueued') + (i.st === 'installing' ? pc : '') + (i.msg ? '  ' + i.msg : '');
     }).join('\n');
     pollTimer = setTimeout(tick, 1000);
   };

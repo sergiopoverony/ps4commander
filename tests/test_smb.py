@@ -193,10 +193,9 @@ try:
         time.sleep(0.2)
     log = open(BASE + '/out.txt').read()
     log = open(BASE + '/out.txt').read()
-    cid2 = 'UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS'
-    check('smb: без FUSE ставится через временную копию', [i['st'] for i in j['items']] == ['done'] and ('stage/' + cid2 + '.pkg') in log and 'способ 2' in log and 'источник http://' not in log, (j, log[-300:]))
-    check('smb: временная копия удалена', not os.path.exists('/tmp/ps4commander_test_data/stage/' + cid2 + '.pkg'))
-    check('smb: /p/ больше нет', get('/p/' + cid2)[0] == 404)
+    check('smb: без FUSE установка не копирует файл, а сообщает причину', [i['st'] for i in j['items']] == ['failed'] and j['items'][0]['msg'] == 'fuse: no_fw' and 'stage' not in log and 'копирование' not in log, (j, log[-300:]))
+    check('smb: временных копий нет', not os.path.exists('/tmp/ps4commander_test_data/stage'))
+    check('smb: /p/ нет', get('/p/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS')[0] == 404)
     # операции FUSE-папки (то, что видит системный установщик)
     st, j = get('/api/_nf?op=ls&path=/')
     check('fuse: корень - список шар', st == 200 and j['r'] == 0 and 'nas' in j['n'], j)

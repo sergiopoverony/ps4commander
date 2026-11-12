@@ -31,7 +31,6 @@ struct Item {
     std::string status = "queued";  // queued | registering | installing | done | already_installed | failed | cancelled
     std::string msg;
     std::string src;        // явный источник для системы: http-адрес или путь (пусто - сам файл)
-    std::string stage;      // временная локальная копия pkg с сетевой папки
     uint64_t total = 0, done = 0;
 };
 
@@ -76,7 +75,7 @@ const int HOST_SLEEP_MS = 50, STALL_TICKS = 100;
 const int HOST_SLEEP_MS = 1000, STALL_TICKS = 180;
 #endif
 
-bool is_active(const Item& i) { return i.status == "queued" || i.status == "registering" || i.status == "copying" || i.status == "installing"; }
+bool is_active(const Item& i) { return i.status == "queued" || i.status == "registering" || i.status == "installing"; }
 bool any_active() { for (auto& i : g_items) if (is_active(i)) return true; return false; }
 
 // путь для BGFT: /data/... -> /user/data/...
@@ -117,7 +116,7 @@ bool read_header(const std::string& path, std::string& cid, uint64_t& size, std:
 const size_t kSysPathMax = 95;
 std::string source_url(const Item& it) {
     if (it.src.compare(0, 7, "http://") == 0) return it.src;
-    std::string p = bgft_path(!it.src.empty() ? it.src : it.stage.empty() ? it.path : it.stage);
+    std::string p = bgft_path(!it.src.empty() ? it.src : it.path);
     if (p.size() <= kSysPathMax) return p;
     std::string dir = std::string(DATA_DIR) + "/links";
     mkdir(dir.c_str(), 0777);
@@ -132,42 +131,7 @@ std::string source_url(const Item& it) {
     return url;
 }
 
-// ---- временная копия pkg с сетевой папки ----
-// Системный установщик читает файл только по локальному пути (адрес http://127.0.0.1 он отклоняет: 0x8099006A),
-// поэтому пакет с шары сначала копируется на диск и после установки удаляется.
-const uint64_t kUsbMargin = 64ull << 20, kInternalMargin = 256ull << 20;
-
-#ifndef HOST_TEST
-bool is_mount(const std::string& dir) {
-    struct stat a, b;
-    return stat(dir.c_str(), &a) == 0 && stat("/mnt", &b) == 0 && a.st_dev != b.st_dev;
-}
-#endif
-uint64_t free_bytes(const std::string& dir) {
-    struct statvfs v;
-    if (statvfs(dir.c_str(), &v) != 0) return 0;
-    return (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
-}
-// Системный установщик хорошо читает /data/pkg (проверено на консоли), поэтому копию кладём туда.
-#ifdef HOST_TEST
-std::string internal_stage_dir() { return std::string(DATA_DIR) + "/stage"; }
-#else
-std::string internal_stage_dir() { return "/data/pkg/ps4commander_stage"; }
-#endif
-
-// Куда положить копию: сначала подключённая флешка (место на внутреннем диске нужно для самой установки), иначе внутренний диск.
-bool pick_stage_dir(uint64_t size, std::string& dir) {
-#ifndef HOST_TEST
-    for (int i = 0; i < 8; i++) {
-        std::string m = "/mnt/usb" + std::to_string(i);
-        if (is_mount(m) && free_bytes(m) >= size + kUsbMargin) { dir = m + "/ps4commander_tmp"; return true; }
-    }
-#endif
-    mkdir("/data/pkg", 0777);
-    if (free_bytes(DATA_DIR) >= 2 * size + kInternalMargin) { dir = internal_stage_dir(); return true; }
-    return false;
-}
-
+// Остатки временных копий, которые делали прежние версии (копирование с шары убрано: пакет читается через FUSE).
 void remove_dir_files(const std::string& dir) {
     DIR* d = opendir(dir.c_str());
     if (!d) return;
@@ -178,23 +142,11 @@ void remove_dir_files(const std::string& dir) {
     closedir(d);
     rmdir(dir.c_str());
 }
-// Остатки от прошлого запуска (копии, которые не успели удалить).
 void cleanup_stale_stage() {
-    remove_dir_files(internal_stage_dir());
+    remove_dir_files("/data/pkg/ps4commander_stage");
+    remove_dir_files(std::string(DATA_DIR) + "/stage");
     for (int i = 0; i < 8; i++) remove_dir_files("/mnt/usb" + std::to_string(i) + "/ps4commander_tmp");
 }
-
-void stage_remove(Item* it) {
-    if (it->stage.empty()) return;
-    unlink(it->stage.c_str());
-    std::string dir = fs_parent(it->stage);
-    rmdir(dir.c_str());   // удалится, только если пустой
-    std::lock_guard<std::mutex> l(g_mu);
-    it->stage.clear();
-}
-
-// Копирует pkg с шары. false - не удалось или отмена (it->status уже выставлен).
-bool stage_in(Item* it);
 
 #ifdef HOST_TEST
 // Заглушки: имитация BGFT для проверок на ПК.
@@ -308,80 +260,26 @@ void set(Item* it, const char* st, const std::string& msg = "") {
 char hexbuf[32];
 std::string hx(int v) { snprintf(hexbuf, sizeof(hexbuf), "0x%08X", (unsigned)v); return hexbuf; }
 
-bool stage_in(Item* it) {
-    std::string dir;
-    if (!pick_stage_dir(it->total, dir)) { set(it, "failed", "no_space"); app_log("установка %s: нет места для временной копии (%lld байт)", it->name.c_str(), (long long)it->total); return false; }
-    mkdir(fs_parent(dir).c_str(), 0777);
-    mkdir(dir.c_str(), 0777);
-    std::string dst = dir + "/" + it->cid + ".pkg";
-    set(it, "copying");
-    { std::lock_guard<std::mutex> l(g_mu); it->done = 0; it->stage = dst; }
-    app_log("установка %s: копирование с сетевой папки в %s", it->name.c_str(), dst.c_str());
-    VFile in, out;
-    int e = v_open_read(it->path, in);
-    if (e) { set(it, "failed", fs_errname(e)); stage_remove(it); return false; }
-    e = v_open_write(dst, out, 0666);
-    if (e) { v_close(in); set(it, "failed", fs_errname(e)); stage_remove(it); return false; }
-    std::vector<char> buf(1 << 20);
-    uint64_t total = 0;
-    bool ok = true;
-    int tk = 0;
-    for (;;) {
-        if (g_cancel || g_stop) { ok = false; set(it, "cancelled"); break; }
-        long r = v_read(in, buf.data(), buf.size());
-        if (r < 0) { set(it, "failed", fs_errname((int)-r)); ok = false; break; }
-        if (r == 0) break;
-        size_t off = 0;
-        while (off < (size_t)r) {
-            long w = v_write(out, buf.data() + off, (size_t)r - off);
-            if (w <= 0) { set(it, "failed", fs_errname(w < 0 ? (int)-w : EIO)); ok = false; break; }
-            off += (size_t)w;
-        }
-        if (!ok) break;
-        total += (uint64_t)r;
-        { std::lock_guard<std::mutex> l(g_mu); it->done = total; }
-        if (++tk % 8 == 0) keep_awake_tick();
-    }
-    v_close(in);
-    v_close(out);
-    if (ok && it->total && total != it->total) { set(it, "failed", "short_copy"); ok = false; }
-    if (!ok) { stage_remove(it); return false; }
-    { std::lock_guard<std::mutex> l(g_mu); it->done = 0; }
-    return true;
-}
-
-// Способы отдать pkg с шары системному установщику (по порядку; отклонённый система способ больше не пробуем):
-//  1) папка FUSE (на флешке, а без неё в /data/ps4commander/mnt) - без копирования, 2) временная копия на диск.
-// (Адрес http://<консоль>:8484 система отклоняет - 0x8099006A, на консоли проверено, поэтому такого способа нет.)
-enum { M_FUSE = 2 };
-std::atomic<int> g_bad{0};
+// Пакет с шары отдаётся системе только через папку FUSE (без копирования). Адрес http://<консоль>:8484 система
+// отклоняет (0x8099006A), поэтому такого способа нет. Копирование на диск убрано по просьбе пользователя.
 const int kSourceRefused = 1;
 
 int run_item_inner(Item* it, bool final_try);
 void run_item(Item* it) {
     if (!smb_is_path(it->path)) { run_item_inner(it, true); return; }
-    auto clear_src = [&] { std::lock_guard<std::mutex> l(g_mu); it->src.clear(); };
     if (g_cancel || g_stop) { set(it, "cancelled"); return; }
-    if (!(g_bad & M_FUSE)) {
-        std::string root, e;
-        if (netfs_root(root, e)) {
-            { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
-            app_log("установка %s: способ 1 - папка FUSE %s", it->name.c_str(), it->src.c_str());
-            int r = run_item_inner(it, false);
-            clear_src();
-            if (r != kSourceRefused) return;
-            g_bad |= M_FUSE;
-            app_log("установка %s: система не приняла папку FUSE", it->name.c_str());
-        } else {
-            app_log("установка %s: FUSE недоступен (%s)", it->name.c_str(), e.c_str());
-            if (e != "no_usb" && e != "reload") g_bad |= M_FUSE;
-        }
+    std::string root, e;
+    set(it, "registering");
+    if (!netfs_root(root, e)) {
+        app_log("установка %s: FUSE недоступен (%s)", it->name.c_str(), e.c_str());
+        set(it, "failed", "fuse: " + e);
+        return;
     }
-    if (g_cancel || g_stop) { set(it, "cancelled"); return; }
-    app_log("установка %s: способ 2 - временная копия на диск", it->name.c_str());
-    if (!stage_in(it)) return;
+    { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
+    app_log("установка %s: папка FUSE %s", it->name.c_str(), it->src.c_str());
     run_item_inner(it, true);
-    stage_remove(it);
+    std::lock_guard<std::mutex> l(g_mu);
+    it->src.clear();
 }
 
 int run_item_inner(Item* it, bool final_try) {
