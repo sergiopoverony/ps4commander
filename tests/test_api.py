@@ -243,6 +243,31 @@ try:
     shutil.rmtree(ROOT + '/cp'); os.unlink(big)
 
     # ----- завершение
+    # установка pkg (заглушка BGFT)
+    def mkpkg(name, cid='UP0000-CUSA00000_00-TESTTESTTESTTEST', magic=b'\x7fCNT'):
+        h = bytearray(0x200)
+        h[0:4] = magic
+        h[0x40:0x40 + 36] = cid.encode()
+        open(ROOT + '/' + name, 'wb').write(bytes(h))
+    mkpkg('good.pkg'); mkpkg('bad.pkg', magic=b'XXXX'); mkpkg('dup.pkg'); mkpkg('fail.pkg')
+    open(ROOT + '/note.txt', 'w').write('x')
+    st, j = post('/api/pkg/install', {'paths': [ROOT + '/note.txt']})
+    check('pkg: не .pkg отклонён', st == 400 and j.get('error') == 'not_pkg', (st, j))
+    st, j = post('/api/pkg/install', {'paths': [ROOT + '/bad.pkg']})
+    check('pkg: неверный заголовок отклонён', st == 400 and j.get('error') == 'not_pkg', (st, j))
+    st, j = post('/api/pkg/install', {'paths': ['/etc/x.pkg']})
+    check('pkg: путь вне корня отклонён', st in (400, 403, 404), (st, j))
+    st, j = raw('/api/pkg/install', b'{}', {}, 'POST')[0], None
+    check('pkg: POST без заголовка запрещён', st in (400, 403), st)
+    st, j = post('/api/pkg/install', {'paths': [ROOT + '/good.pkg', ROOT + '/dup.pkg', ROOT + '/fail.pkg']})
+    check('pkg: поставлено в очередь', st == 200, (st, j))
+    t0 = time.time()
+    while time.time() - t0 < 30:
+        st, j = get('/api/pkg')
+        if not j['active']: break
+        time.sleep(0.2)
+    sts = {i['n']: i['st'] for i in j['items']}
+    check('pkg: статусы done/already/failed', sts == {'good.pkg': 'done', 'dup.pkg': 'already_installed', 'fail.pkg': 'failed'}, sts)
     st, j = post('/quit')
     check('quit', st == 200)
     try:

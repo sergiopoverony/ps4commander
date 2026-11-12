@@ -10,6 +10,7 @@ Russian version: [docs/README_ru.md](docs/README_ru.md)
 - Text viewer / hex viewer, image/audio/video preview, built-in text editor (up to 1 MB).
 - Upload (button or drag-and-drop) and download.
 - Recursive file search with masks.
+- Install `.pkg` files via the system installer (BGFT), with a queue and progress (key `I`).
 - Safety: protected system paths, an explicit "unsafe" mode for system areas, CSRF header, DNS-rebinding protection.
 - Interface languages: English, Russian.
 

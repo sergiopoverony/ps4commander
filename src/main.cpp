@@ -4,6 +4,7 @@
 // В покое ничего не делает: ждёт обращения к веб-интерфейсу. Все изменения файлов выполняются
 // только по явной команде пользователя и только в фоновом задании с прогрессом и отменой.
 #include "http.h"
+#include "install.h"
 #include "jobs.h"
 #include "log.h"
 #include "platform.h"
@@ -19,6 +20,7 @@ int main() {
 #endif
     int rc = http_run(port);
     job_shutdown();
+    install_shutdown();
     app_log("завершение, код %d", rc);
     if (rc == 0) notify("ps4commander: выключен");
     return rc;

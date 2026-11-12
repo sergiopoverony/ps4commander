@@ -1,6 +1,7 @@
 #include "http.h"
 #include "assets_gen.h"
 #include "fs.h"
+#include "install.h"
 #include "jobs.h"
 #include "json.h"
 #include "log.h"
@@ -271,6 +272,14 @@ static void handle_post(int fd, const std::string& path, const std::string& body
         }
         if (job_start(s, err)) { app_log("запущено задание %s", s.op.c_str()); respond_json(fd, 200, "{\"ok\":true}"); }
         else respond_err(fd, err_status(err), err);
+    } else if (path == "/api/pkg/install") {
+        std::vector<std::string> ps = norm_list(j.get_arr("paths"));
+        for (auto& x : ps) if (x.empty()) { respond_err(fd, 400, "bad_path"); return; }
+        if (install_start(ps, err)) { app_log("установка pkg: %d шт.", (int)ps.size()); respond_json(fd, 200, "{\"ok\":true}"); }
+        else respond_err(fd, err_status(err), err);
+    } else if (path == "/api/pkg/cancel") {
+        install_cancel();
+        respond_json(fd, 200, "{\"ok\":true}");
     } else if (path == "/api/job/cancel") {
         job_cancel();
         respond_json(fd, 200, "{\"ok\":true}");
@@ -341,6 +350,7 @@ static void handle(int fd) {
                 if (js.empty()) respond_err(fd, err_status(err), err); else respond_json(fd, 200, js);
             }
         } else if (path == "/api/job") respond_json(fd, 200, job_json());
+        else if (path == "/api/pkg") respond_json(fd, 200, install_json());
         else if (path == "/api/log") {
             size_t n = 8192;
             std::string t = log_tail(n);
