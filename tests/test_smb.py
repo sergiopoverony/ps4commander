@@ -191,7 +191,9 @@ try:
         st, j = get('/api/pkg')
         if not j['active']: break
         time.sleep(0.2)
-    check('smb: системе отдан короткий адрес /p/<id>', '/p/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS' in open(BASE + '/out.txt').read())
+    log = open(BASE + '/out.txt').read()
+    check('smb: системе отдан локальный путь, не http', 'stage/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS.pkg' in log and '/p/' not in log)
+    check('smb: временная копия удалена', not os.path.exists('/tmp/ps4commander_test_data/stage/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS.pkg'))
     check('smb: установка с шары завершилась', [i['st'] for i in j['items']] == ['done'], j)
     # Range: нужен для BGFT и перемотки видео
     st, body, hd = raw(q('/api/download', path='/smb/nas/sub/big.bin'), headers={'Range': 'bytes=1000-1999'})

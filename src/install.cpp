@@ -1,6 +1,5 @@
 #include "install.h"
 #include "fs.h"
-#include "http.h"
 #include "vfs.h"
 #include "json.h"
 #include "log.h"
@@ -17,6 +16,8 @@
 #include <mutex>
 #include <sys/mman.h>
 #include <cerrno>
+#include <dirent.h>
+#include <sys/statvfs.h>
 #include <sys/stat.h>
 #include <thread>
 #include <strings.h>
@@ -28,6 +29,7 @@ struct Item {
     std::string path, name, cid;
     std::string status = "queued";  // queued | registering | installing | done | already_installed | failed | cancelled
     std::string msg;
+    std::string stage;      // временная локальная копия pkg с сетевой папки
     uint64_t total = 0, done = 0;
 };
 
@@ -72,7 +74,7 @@ const int HOST_SLEEP_MS = 50, STALL_TICKS = 100;
 const int HOST_SLEEP_MS = 1000, STALL_TICKS = 180;
 #endif
 
-bool is_active(const Item& i) { return i.status == "queued" || i.status == "registering" || i.status == "installing"; }
+bool is_active(const Item& i) { return i.status == "queued" || i.status == "registering" || i.status == "copying" || i.status == "installing"; }
 bool any_active() { for (auto& i : g_items) if (is_active(i)) return true; return false; }
 
 // путь для BGFT: /data/... -> /user/data/...
@@ -112,8 +114,7 @@ bool read_header(const std::string& path, std::string& cid, uint64_t& size, std:
 // Поэтому для длинных путей отдаём ей короткую символическую ссылку (как делает PS4Mount).
 const size_t kSysPathMax = 95;
 std::string source_url(const Item& it) {
-    if (smb_is_path(it.path)) return "http://127.0.0.1:" + std::to_string(http_port()) + "/p/" + it.cid;
-    std::string p = bgft_path(it.path);
+    std::string p = bgft_path(it.stage.empty() ? it.path : it.stage);
     if (p.size() <= kSysPathMax) return p;
     std::string dir = std::string(DATA_DIR) + "/links";
     mkdir(dir.c_str(), 0777);
@@ -127,6 +128,64 @@ std::string source_url(const Item& it) {
     app_log("BGFT: путь длиной %d заменён короткой ссылкой %s", (int)p.size(), url.c_str());
     return url;
 }
+
+// ---- временная копия pkg с сетевой папки ----
+// Системный установщик читает файл только по локальному пути (адрес http://127.0.0.1 он отклоняет: 0x8099006A),
+// поэтому пакет с шары сначала копируется на диск и после установки удаляется.
+const uint64_t kUsbMargin = 64ull << 20, kInternalMargin = 256ull << 20;
+
+#ifndef HOST_TEST
+bool is_mount(const std::string& dir) {
+    struct stat a, b;
+    return stat(dir.c_str(), &a) == 0 && stat("/mnt", &b) == 0 && a.st_dev != b.st_dev;
+}
+#endif
+uint64_t free_bytes(const std::string& dir) {
+    struct statvfs v;
+    if (statvfs(dir.c_str(), &v) != 0) return 0;
+    return (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
+}
+std::string internal_stage_dir() { return std::string(DATA_DIR) + "/stage"; }
+
+// Куда положить копию: сначала подключённая флешка (место на внутреннем диске нужно для самой установки), иначе внутренний диск.
+bool pick_stage_dir(uint64_t size, std::string& dir) {
+#ifndef HOST_TEST
+    for (int i = 0; i < 8; i++) {
+        std::string m = "/mnt/usb" + std::to_string(i);
+        if (is_mount(m) && free_bytes(m) >= size + kUsbMargin) { dir = m + "/ps4commander_tmp"; return true; }
+    }
+#endif
+    if (free_bytes(DATA_DIR) >= 2 * size + kInternalMargin) { dir = internal_stage_dir(); return true; }
+    return false;
+}
+
+void remove_dir_files(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    while (struct dirent* e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        unlink((dir + "/" + e->d_name).c_str());
+    }
+    closedir(d);
+    rmdir(dir.c_str());
+}
+// Остатки от прошлого запуска (копии, которые не успели удалить).
+void cleanup_stale_stage() {
+    remove_dir_files(internal_stage_dir());
+    for (int i = 0; i < 8; i++) remove_dir_files("/mnt/usb" + std::to_string(i) + "/ps4commander_tmp");
+}
+
+void stage_remove(Item* it) {
+    if (it->stage.empty()) return;
+    unlink(it->stage.c_str());
+    std::string dir = fs_parent(it->stage);
+    rmdir(dir.c_str());   // удалится, только если пустой
+    std::lock_guard<std::mutex> l(g_mu);
+    it->stage.clear();
+}
+
+// Копирует pkg с шары. false - не удалось или отмена (it->status уже выставлен).
+bool stage_in(Item* it);
 
 #ifdef HOST_TEST
 // Заглушки: имитация BGFT для проверок на ПК.
@@ -240,7 +299,56 @@ void set(Item* it, const char* st, const std::string& msg = "") {
 char hexbuf[32];
 std::string hx(int v) { snprintf(hexbuf, sizeof(hexbuf), "0x%08X", (unsigned)v); return hexbuf; }
 
+bool stage_in(Item* it) {
+    std::string dir;
+    if (!pick_stage_dir(it->total, dir)) { set(it, "failed", "no_space"); app_log("установка %s: нет места для временной копии (%lld байт)", it->name.c_str(), (long long)it->total); return false; }
+    mkdir(fs_parent(dir).c_str(), 0777);
+    mkdir(dir.c_str(), 0777);
+    std::string dst = dir + "/" + it->cid + ".pkg";
+    set(it, "copying");
+    { std::lock_guard<std::mutex> l(g_mu); it->done = 0; it->stage = dst; }
+    app_log("установка %s: копирование с сетевой папки в %s", it->name.c_str(), dst.c_str());
+    VFile in, out;
+    int e = v_open_read(it->path, in);
+    if (e) { set(it, "failed", fs_errname(e)); stage_remove(it); return false; }
+    e = v_open_write(dst, out, 0666);
+    if (e) { v_close(in); set(it, "failed", fs_errname(e)); stage_remove(it); return false; }
+    std::vector<char> buf(1 << 20);
+    uint64_t total = 0;
+    bool ok = true;
+    int tk = 0;
+    for (;;) {
+        if (g_cancel || g_stop) { ok = false; set(it, "cancelled"); break; }
+        long r = v_read(in, buf.data(), buf.size());
+        if (r < 0) { set(it, "failed", fs_errname((int)-r)); ok = false; break; }
+        if (r == 0) break;
+        size_t off = 0;
+        while (off < (size_t)r) {
+            long w = v_write(out, buf.data() + off, (size_t)r - off);
+            if (w <= 0) { set(it, "failed", fs_errname(w < 0 ? (int)-w : EIO)); ok = false; break; }
+            off += (size_t)w;
+        }
+        if (!ok) break;
+        total += (uint64_t)r;
+        { std::lock_guard<std::mutex> l(g_mu); it->done = total; }
+        if (++tk % 8 == 0) keep_awake_tick();
+    }
+    v_close(in);
+    v_close(out);
+    if (ok && it->total && total != it->total) { set(it, "failed", "short_copy"); ok = false; }
+    if (!ok) { stage_remove(it); return false; }
+    { std::lock_guard<std::mutex> l(g_mu); it->done = 0; }
+    return true;
+}
+
+void run_item_inner(Item* it);
 void run_item(Item* it) {
+    if (smb_is_path(it->path) && !stage_in(it)) return;
+    run_item_inner(it);
+    stage_remove(it);
+}
+
+void run_item_inner(Item* it) {
     int task = 0, r = 0;
     set(it, "registering");
     for (int k = 0; k < 30; k++) {
@@ -311,7 +419,7 @@ bool install_start(const std::vector<std::string>& paths, std::string& err) {
     if (!any_active()) { while (g_items.size() + add.size() > kMaxItems && !g_items.empty()) g_items.pop_front(); }
     else if (g_items.size() + add.size() > kMaxItems) { err = "busy"; return false; }
     for (auto& i : add) g_items.push_back(i);
-    if (!g_thr_started) { g_thr_started = true; g_thr = std::thread(worker); }
+    if (!g_thr_started) { cleanup_stale_stage(); g_thr_started = true; g_thr = std::thread(worker); }
     g_cv.notify_all();
     return true;
 }
@@ -327,13 +435,6 @@ std::string install_json() {
              "\",\"total\":" + std::to_string(i.total) + ",\"done\":" + std::to_string(i.done) + "}";
     }
     return o + "]}";
-}
-
-bool install_path_for_token(const std::string& token, std::string& path) {
-    std::lock_guard<std::mutex> l(g_mu);
-    for (auto it = g_items.rbegin(); it != g_items.rend(); ++it)
-        if (it->cid == token && is_active(*it)) { path = it->path; return true; }
-    return false;
 }
 
 void install_cancel() {
