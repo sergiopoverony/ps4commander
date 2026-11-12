@@ -9,6 +9,7 @@ Russian version: [docs/README_ru.md](docs/README_ru.md)
 - Copy, move, delete, rename, new folder, new file, permissions (chmod), folder size, with progress and cancel.
 - Text viewer / hex viewer, image/audio/video preview, built-in text editor (up to 1 MB).
 - Download a folder (or several items) as a ZIP built on the fly, no temporary files (Ctrl+D).
+- Network folders over SMB (SMB2/3, Windows/Samba/NAS shares) shown as `/smb/<name>`: browse, view, download, copy/move to and from the console, ZIP, search. Press `N` to add a share; passwords are stored on the console in `/data/ps4commander/smb.json`.
 - Upload (button or drag-and-drop) and download.
 - Recursive file search with masks.
 - Install `.pkg` files via the system installer (BGFT), with a queue and progress (Enter on a `.pkg`).

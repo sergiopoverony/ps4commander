@@ -1,5 +1,7 @@
 #include "fs.h"
 #include "json.h"
+#include "smb.h"
+#include "vfs.h"
 #include <algorithm>
 #include <chrono>
 #include <cerrno>
@@ -31,6 +33,12 @@ std::string fs_errname(int e) {
         case ENAMETOOLONG: return "ENAMETOOLONG";
         case EMFILE: return "EMFILE";
         case EFBIG: return "EFBIG";
+        case ECONNREFUSED: return "ECONNREFUSED";
+        case ETIMEDOUT: return "ETIMEDOUT";
+        case EHOSTUNREACH: return "EHOSTUNREACH";
+        case ENETUNREACH: return "ENETUNREACH";
+        case ECONNRESET: return "ECONNRESET";
+        case ENOTCONN: return "ENOTCONN";
         default: { char b[24]; snprintf(b, sizeof(b), "E%d", e); return b; }
     }
 }
@@ -88,7 +96,8 @@ int fs_danger(const std::string& n) {
     if (n == "/") return 2;
     std::vector<std::string> c = comps(n);
     if (c.size() <= 1) return 2;                                   // /data, /user, /system, ...
-    if (c.size() == 2 && (c[0] == "mnt" || c[0] == "user")) return 2;  // /mnt/usb0, /user/home, /user/data
+    if (c.size() == 2 && (c[0] == "mnt" || c[0] == "user")) return 2;
+    if (c[0] == "smb") return c.size() <= 2 ? 2 : 0;                  // /smb и корень шары защищены, внутри шары обычные файлы  // /mnt/usb0, /user/home, /user/data
     static const char* sys[] = {"system", "system_ex", "system_data", "preinst", "preinst2", "dev", "boot", nullptr};
     for (int k = 0; sys[k]; ++k)
         if (c[0] == sys[k]) return 1;
@@ -103,7 +112,7 @@ static std::string host_root() {
 }
 static bool jail_ok(const std::string& n) {
     std::string r = host_root();
-    return !r.empty() && r != "/" && fs_inside(r, n);
+    return smb_is_path(n) || (!r.empty() && r != "/" && fs_inside(r, n));
 }
 #endif
 
@@ -128,7 +137,9 @@ std::string fs_check_modify(const std::string& n, bool unsafe, bool as_container
 
 std::string fs_roots_json() {
 #ifdef HOST_TEST
-    return "[{\"p\":\"" + json_esc(host_root()) + "\",\"mnt\":false}]";
+    std::string o = "[{\"p\":\"" + json_esc(host_root()) + "\",\"mnt\":false}";
+    for (auto& c : smb_list()) o += ",{\"p\":\"/smb/" + json_esc(c.alias) + "\",\"mnt\":false,\"smb\":true}";
+    return o + "]";
 #else
     static const char* cand[] = {"/", "/data", "/user", "/user/home", "/mnt/usb0", "/mnt/usb1", "/mnt/usb2", "/mnt/usb3",
                                  "/mnt/usb4", "/mnt/usb5", "/mnt/usb6", "/mnt/usb7", "/mnt/ext0", "/mnt/ext1",
@@ -145,6 +156,11 @@ std::string fs_roots_json() {
         if (!strncmp(cand[k], "/mnt/", 5)) { struct stat pst; mnt = stat("/mnt", &pst) == 0 && pst.st_dev != st.st_dev; }
         o += "{\"p\":\"" + std::string(cand[k]) + "\",\"mnt\":" + (mnt ? "true" : "false") + "}";
     }
+    for (auto& c : smb_list()) {
+        if (!first) o += ',';
+        first = false;
+        o += "{\"p\":\"/smb/" + json_esc(c.alias) + "\",\"mnt\":false,\"smb\":true}";
+    }
     return o + "]";
 #endif
 }
@@ -153,6 +169,35 @@ std::string fs_ls_json(const std::string& n, std::string& err) {
 #ifdef HOST_TEST
     if (!jail_ok(n)) { err = "outside_root"; return ""; }
 #endif
+    if (smb_is_path(n)) {
+        std::vector<SmbEnt> ents;
+        if (n == "/smb") {
+            for (auto& c : smb_list()) { SmbEnt e; e.name = c.alias; e.st.dir = true; ents.push_back(e); }
+        } else {
+            int e = smb_list_dir(n, ents);
+            if (e) { err = fs_errname(e); return ""; }
+        }
+        std::sort(ents.begin(), ents.end(), [](const SmbEnt& a, const SmbEnt& b) { return a.name < b.name; });
+        const size_t kMaxS = 20000;
+        std::string it;
+        bool tr = false;
+        size_t cnt = 0;
+        for (auto& e : ents) {
+            if (cnt >= kMaxS) { tr = true; break; }
+            char buf[200];
+            snprintf(buf, sizeof(buf), "\",\"t\":\"%c\",\"s\":%lld,\"m\":%lld,\"p\":\"%03o\",\"u\":0,\"g\":0}", e.st.dir ? 'd' : e.st.link ? 'l' : 'f',
+                     (long long)e.st.size, (long long)e.st.mtime, e.st.dir ? 0755 : 0644);
+            if (cnt) it += ',';
+            it += "{\"n\":\"" + json_esc(e.name) + buf;
+            ++cnt;
+        }
+        uint64_t tot = 0, av = 0;
+        long long fb = -1, tb = -1;
+        if (n != "/smb" && smb_space(n, tot, av) == 0) { fb = (long long)av; tb = (long long)tot; }
+        char tl[200];
+        snprintf(tl, sizeof(tl), "],\"free\":%lld,\"total\":%lld,\"danger\":%d,\"trunc\":%s}", fb, tb, fs_danger(n), tr ? "true" : "false");
+        return "{\"path\":\"" + json_esc(n) + "\",\"parent\":\"" + json_esc(fs_parent(n)) + "\",\"entries\":[" + it + tl;
+    }
     DIR* d = opendir(n.c_str());
     if (!d) { err = fs_errname(errno); return ""; }
     const size_t kMax = 20000;
@@ -209,22 +254,24 @@ bool fs_read_range(const std::string& n, long long off, long long len, std::stri
     if (off < 0) off = 0;
     if (len < 0) len = 0;
     if (len > (1 << 20)) len = 1 << 20;
-    int fd = open(n.c_str(), O_RDONLY);
-    if (fd < 0) { err = fs_errname(errno); return false; }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { err = S_ISDIR(st.st_mode) ? "EISDIR" : "not_regular"; close(fd); return false; }
-    size = (long long)st.st_size;
+    VStat vs;
+    int e = v_lstat(n, vs);
+    if (e) { err = fs_errname(e); return false; }
+    if (vs.dir) { err = "EISDIR"; return false; }
+    VFile f;
+    e = v_open_read(n, f);
+    if (e) { err = fs_errname(e); return false; }
+    size = (long long)vs.size;
     out.assign((size_t)len, '\0');
     size_t got = 0;
     while (got < (size_t)len) {
-        ssize_t r = pread(fd, &out[got], (size_t)len - got, (off_t)(off + (long long)got));
-        if (r < 0 && errno == EINTR) continue;
-        if (r < 0) { err = fs_errname(errno); close(fd); return false; }
+        long r = v_pread(f, (uint64_t)(off + (long long)got), &out[got], (size_t)len - got);
+        if (r < 0) { err = fs_errname((int)-r); v_close(f); return false; }
         if (r == 0) break;
         got += (size_t)r;
     }
     out.resize(got);
-    close(fd);
+    v_close(f);
     return true;
 }
 
@@ -236,7 +283,8 @@ bool fs_mkdir(const std::string& n, bool unsafe, std::string& err) {
     err = fs_check_modify(n, unsafe, true);
     if (!err.empty()) return false;
     if (n == "/" || !valid_name(fs_basename(n))) { err = "bad_name"; return false; }
-    if (mkdir(n.c_str(), 0777) != 0) { err = fs_errname(errno); return false; }
+    int e = v_mkdir(n, 0777);
+    if (e) { err = fs_errname(e); return false; }
     return true;
 }
 
@@ -246,9 +294,10 @@ bool fs_rename(const std::string& from, const std::string& to, bool unsafe, std:
     if (!err.empty()) return false;
     if (!valid_name(fs_basename(to))) { err = "bad_name"; return false; }
     if (fs_inside(from, to) && from != to) { err = "into_self"; return false; }
-    struct stat st;
-    if (from != to && lstat(to.c_str(), &st) == 0) { err = "EEXIST"; return false; }
-    if (rename(from.c_str(), to.c_str()) != 0) { err = fs_errname(errno); return false; }
+    VStat st;
+    if (from != to && v_lstat(to, st) == 0) { err = "EEXIST"; return false; }
+    int e = v_rename(from, to);
+    if (e) { err = fs_errname(e); return false; }
     return true;
 }
 
@@ -292,6 +341,27 @@ std::string fs_find_json(const std::string& root, const std::string& pattern, in
     while (!stack.empty() && !trunc) {
         std::string dir = stack.back();
         stack.pop_back();
+        if (smb_is_path(dir)) {
+            std::vector<SmbEnt> ents;
+            int se = dir == "/smb" ? 0 : smb_list_dir(dir, ents);
+            if (dir == "/smb") for (auto& c : smb_list()) { SmbEnt x; x.name = c.alias; x.st.dir = true; ents.push_back(x); }
+            if (se) { if (!any && dir == root) { err = fs_errname(se); return ""; } any = true; continue; }
+            any = true;
+            for (auto& x : ents) {
+                ++scanned;
+                if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(max_secs) || scanned > 400000) { trunc = true; break; }
+                std::string full = fs_join(dir, x.name);
+                if (glob ? fs_glob(pattern, x.name) : contains_ci(x.name, pattern)) {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "\",\"t\":\"%c\",\"s\":%lld}", x.st.dir ? 'd' : x.st.link ? 'l' : 'f', (long long)x.st.size);
+                    if (found) items += ',';
+                    items += "{\"p\":\"" + json_esc(full) + buf;
+                    if (++found >= max_results) { trunc = true; break; }
+                }
+                if (x.st.dir) stack.push_back(full);
+            }
+            continue;
+        }
         DIR* d = opendir(dir.c_str());
         if (!d) { if (!any && dir == root) { err = fs_errname(errno); return ""; } any = true; continue; }
         any = true;

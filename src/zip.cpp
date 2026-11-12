@@ -2,6 +2,7 @@
 #include "fs.h"
 #include "log.h"
 #include "platform.h"
+#include "vfs.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -111,32 +112,27 @@ size_t central_len(const ZipEntry& e, uint64_t off) {
 }
 
 bool walk(const std::string& abs, const std::string& rel, ZipPlan& plan, std::string& err, int depth) {
-    struct stat st;
-    if (lstat(abs.c_str(), &st) != 0) { err = fs_errname(errno); return false; }
-    if (S_ISLNK(st.st_mode) || (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))) { plan.skipped++; return true; }
+    VStat st;
+    int le = v_lstat(abs, st);
+    if (le) { err = fs_errname(le); return false; }
+    if (st.lnk || (!st.reg && !st.dir)) { plan.skipped++; return true; }
     if (plan.entries.size() >= kMaxEntries) { err = "too_many"; return false; }
     ZipEntry e;
     e.abs = abs;
-    e.mode = st.st_mode & 07777;
-    e.mtime = (long long)st.st_mtime;
-    if (S_ISDIR(st.st_mode)) {
+    e.mode = st.mode & 07777;
+    e.mtime = (long long)st.mtime;
+    if (st.dir) {
         e.dir = true;
         e.rel = rel + "/";
         plan.entries.push_back(e);
         if (depth > 64) { plan.skipped++; return true; }
-        DIR* d = opendir(abs.c_str());
-        if (!d) { plan.skipped++; return true; }
         std::vector<std::string> kids;
-        while (struct dirent* de = readdir(d)) {
-            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-            kids.push_back(de->d_name);
-        }
-        closedir(d);
+        if (v_list(abs, kids) != 0) { plan.skipped++; return true; }
         std::sort(kids.begin(), kids.end());
         for (auto& k : kids) if (!walk(fs_join(abs, k), rel + "/" + k, plan, err, depth + 1)) return false;
     } else {
         e.rel = rel;
-        e.size = (uint64_t)st.st_size;
+        e.size = (uint64_t)st.size;
         plan.entries.push_back(e);
     }
     return true;
@@ -185,22 +181,23 @@ bool zip_write(const ZipPlan& plan, const std::function<bool(const char*, size_t
         std::string lh = local_header(e);
         if (!out(lh.data(), lh.size())) return false;
         if (e.dir) continue;
-        int f = open(e.abs.c_str(), O_RDONLY);
+        VFile f;
+        int oe = v_open_read(e.abs, f);
+        bool opened = oe == 0;
         uint64_t left = e.size;
         uint32_t crc = 0;
-        if (f < 0) app_log("zip: не открыть %s (%s), записано нулями", e.abs.c_str(), fs_errname(errno).c_str());
+        if (!opened) app_log("zip: не открыть %s (%s), записано нулями", e.abs.c_str(), fs_errname(oe).c_str());
         while (left > 0) {
             size_t want = (size_t)std::min<uint64_t>(left, buf.size());
-            ssize_t r = f >= 0 ? read(f, buf.data(), want) : 0;
-            if (r < 0 && errno == EINTR) continue;
-            if (r <= 0) { memset(buf.data(), 0, want); r = (ssize_t)want; }  // файл стал короче: дополняем нулями
+            long r = opened ? v_read(f, buf.data(), want) : 0;
+            if (r <= 0) { memset(buf.data(), 0, want); r = (long)want; }  // файл стал короче: дополняем нулями
             crc = crc_update(crc, (const unsigned char*)buf.data(), (size_t)r);
-            if (!out(buf.data(), (size_t)r)) { if (f >= 0) close(f); return false; }
+            if (!out(buf.data(), (size_t)r)) { if (opened) v_close(f); return false; }
             left -= (uint64_t)r;
             auto now = std::chrono::steady_clock::now();
             if (now - last_tick > std::chrono::seconds(5)) { keep_awake_tick(); last_tick = now; }
         }
-        if (f >= 0) close(f);
+        if (opened) v_close(f);
         crcs[i] = crc;
         std::string dsc;
         p32(dsc, 0x08074b50);

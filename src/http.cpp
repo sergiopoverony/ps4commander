@@ -2,6 +2,8 @@
 #include "assets_gen.h"
 #include "fs.h"
 #include "install.h"
+#include "smb.h"
+#include "vfs.h"
 #include "jobs.h"
 #include "json.h"
 #include "log.h"
@@ -157,24 +159,33 @@ static const char* inline_type(const std::string& name) {
 static void do_download(int fd, const std::string& n, bool inl) {
     std::string e = fs_check_read(n);
     if (!e.empty()) { respond_err(fd, 403, e); return; }
-    int f = open(n.c_str(), O_RDONLY);
-    if (f < 0) { std::string en = fs_errname(errno); respond_err(fd, err_status(en), en); return; }
-    struct stat st;
-    if (fstat(f, &st) != 0 || !S_ISREG(st.st_mode)) { close(f); respond_err(fd, 400, "not_regular"); return; }
+    VStat st;
+    int le = v_lstat(n, st);
+    if (le) { std::string en = fs_errname(le); respond_err(fd, err_status(en), en); return; }
+    VFile f;
+    int oe = v_open_read(n, f);
+    if (oe) { std::string en = fs_errname(oe); respond_err(fd, err_status(en), en); return; }
+    if (!smb_is_path(n)) {
+        struct stat fst;
+        if (fstat(f.fd, &fst) != 0 || !S_ISREG(fst.st_mode)) { v_close(f); respond_err(fd, 400, "not_regular"); return; }
+        st.size = (uint64_t)fst.st_size;
+    } else if (st.dir) { v_close(f); respond_err(fd, 400, "not_regular"); return; }
     const char* it = inl ? inline_type(fs_basename(n)) : nullptr;
     std::string extra = it ? "" : "Content-Disposition: attachment; filename*=UTF-8''" + pct_encode(fs_basename(n)) + "\r\n";
-    send_head(fd, 200, it ? it : "application/octet-stream", (long long)st.st_size, false, extra);
+    send_head(fd, 200, it ? it : "application/octet-stream", (long long)st.size, false, extra);
     std::vector<char> buf(256 * 1024);
-    for (;;) {
-        ssize_t r = read(f, buf.data(), buf.size());
-        if (r < 0 && errno == EINTR) continue;
+    uint64_t sent = 0;
+    int tk = 0;
+    while (sent < st.size) {
+        long r = v_read(f, buf.data(), std::min<uint64_t>(buf.size(), st.size - sent));
         if (r <= 0) break;
         if (!send_all(fd, buf.data(), (size_t)r)) break;
+        sent += (uint64_t)r;
+        if (smb_is_path(n) && ++tk % 64 == 0) keep_awake_tick();
     }
-    close(f);
+    v_close(f);
 }
 
-// Папка (или несколько имён из одного каталога) одним ZIP-архивом, собираемым на лету.
 // Положение панелей хранится на консоли, чтобы было одинаковым с любого устройства.
 static std::string state_path() { return std::string(DATA_DIR) + "/state.json"; }
 static std::string state_read() {
@@ -199,6 +210,7 @@ static bool state_write(const std::string& l, const std::string& r) {
     return rename(tmp.c_str(), state_path().c_str()) == 0;
 }
 
+// Папка (или несколько имён из одного каталога) одним ZIP-архивом, собираемым на лету.
 static void do_zip(int fd, const std::string& query) {
     std::string err;
     std::string dir = fs_normalize(qget(query, "dir"));
@@ -231,19 +243,22 @@ static void do_upload(int fd, const std::string& query, size_t content_len, cons
     std::string c = fs_check_modify(n, unsafe, true);
     if (c.empty() && fs_danger(n) == 2) c = "protected";
     if (!c.empty()) { respond_err(fd, err_status(c), c); return; }
-    struct stat st;
-    if (stat(n.c_str(), &st) == 0 && !overwrite) { respond_err(fd, 409, "EEXIST"); return; }
+    VStat st;
+    bool exists = v_lstat(n, st) == 0;
+    if (exists && !overwrite) { respond_err(fd, 409, "EEXIST"); return; }
+    if (exists && st.dir) { respond_err(fd, 400, "EISDIR"); return; }
     std::string tmp = n + ".part";
-    int f = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (f < 0) { std::string en = fs_errname(errno); respond_err(fd, err_status(en), en); return; }
+    VFile f;
+    int oe = v_open_write(tmp, f, 0666);
+    if (oe) { std::string en = fs_errname(oe); respond_err(fd, err_status(en), en); return; }
     size_t got = 0;
     bool ok = true;
+    int werr = 0;
     auto put = [&](const char* p, size_t len) {
         size_t off = 0;
         while (off < len) {
-            ssize_t w = write(f, p + off, len - off);
-            if (w < 0 && errno == EINTR) continue;
-            if (w <= 0) { ok = false; return; }
+            long w = v_write(f, p + off, len - off);
+            if (w <= 0) { ok = false; werr = w < 0 ? (int)-w : EIO; return; }
             off += (size_t)w;
         }
         got += len;
@@ -255,22 +270,22 @@ static void do_upload(int fd, const std::string& query, size_t content_len, cons
     while (ok && got < content_len) {
         ssize_t r = recv(fd, buf.data(), std::min(buf.size(), content_len - got), 0);
         if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) { ok = false; break; }
+        if (r <= 0) { ok = false; werr = EIO; break; }
         put(buf.data(), (size_t)r);
         if (++last_tick % 64 == 0) keep_awake_tick();
     }
-    int werr = errno;
-    close(f);
+    v_close(f);
     if (!ok || got != content_len) {
-        unlink(tmp.c_str());
+        v_unlink(tmp);
         respond_err(fd, 400, ok ? "short_body" : fs_errname(werr));
         return;
     }
-    struct stat old;
-    if (stat(n.c_str(), &old) == 0) chmod(tmp.c_str(), old.st_mode & 07777);  // перезапись (сохранение из редактора) не должна менять права
-    if (rename(tmp.c_str(), n.c_str()) != 0) {
-        std::string en = fs_errname(errno);
-        unlink(tmp.c_str());
+    if (exists && !smb_is_path(n)) v_chmod(tmp, st.mode & 07777);  // перезапись (сохранение из редактора) не должна менять права
+    if (exists && smb_is_path(n)) v_unlink(n);
+    int re = v_rename(tmp, n);
+    if (re) {
+        std::string en = fs_errname(re);
+        v_unlink(tmp);
         respond_err(fd, 400, en);
         return;
     }
@@ -337,6 +352,15 @@ static void handle_post(int fd, const std::string& path, const std::string& body
         if (j.str.count("l")) { l = fs_normalize(j.get_str("l")); }
         if (j.str.count("r")) { r = fs_normalize(j.get_str("r")); }
         if (state_write(l, r)) respond_json(fd, 200, "{\"ok\":true}"); else respond_err(fd, 400, "write_failed");
+    } else if (path == "/api/smb/save") {
+        SmbConn c;
+        c.alias = j.get_str("alias"); c.host = j.get_str("host"); c.share = j.get_str("share");
+        c.user = j.get_str("user"); c.pass = j.get_str("pass"); c.domain = j.get_str("domain");
+        if (smb_save(c, err)) respond_json(fd, 200, "{\"ok\":true}");
+        else respond_err(fd, err == "write_failed" ? 500 : 400, err);
+    } else if (path == "/api/smb/del") {
+        if (smb_remove(j.get_str("alias"))) respond_json(fd, 200, "{\"ok\":true}");
+        else respond_err(fd, 404, "ENOENT");
     } else if (path == "/api/pkg/cancel") {
         install_cancel();
         respond_json(fd, 200, "{\"ok\":true}");
@@ -412,6 +436,7 @@ static void handle(int fd) {
         } else if (path == "/api/job") respond_json(fd, 200, job_json());
         else if (path == "/api/pkg") respond_json(fd, 200, install_json());
         else if (path == "/api/zip") do_zip(fd, query);
+        else if (path == "/api/smb") respond_json(fd, 200, "{\"conns\":" + smb_conns_json() + "}");
         else if (path == "/api/state") respond_json(fd, 200, state_read());
         else if (path == "/api/log") {
             size_t n = 8192;

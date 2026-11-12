@@ -3,6 +3,8 @@
 #include "json.h"
 #include "log.h"
 #include "platform.h"
+#include "smb.h"
+#include "vfs.h"
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -68,22 +70,16 @@ void tick() {
 }
 
 bool list_dir(const std::string& path, std::vector<std::string>& names, int& err) {
-    DIR* d = opendir(path.c_str());
-    if (!d) { err = errno; return false; }
-    while (struct dirent* e = readdir(d)) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-        names.push_back(e->d_name);
-    }
-    closedir(d);
-    return true;
+    err = v_list(path, names);
+    return err == 0;
 }
 
 // ---- подсчёт для прогресса ----
 void count_tree(const std::string& p, long long& files, long long& bytes) {
     if (cancelled()) return;
-    struct stat st;
-    if (lstat(p.c_str(), &st) != 0) return;
-    if (S_ISDIR(st.st_mode)) {
+    VStat st;
+    if (v_lstat(p, st) != 0) return;
+    if (st.dir) {
         ++files;
         std::vector<std::string> names;
         int e = 0;
@@ -91,7 +87,7 @@ void count_tree(const std::string& p, long long& files, long long& bytes) {
         for (auto& n : names) count_tree(fs_join(p, n), files, bytes);
     } else {
         ++files;
-        if (S_ISREG(st.st_mode)) bytes += (long long)st.st_size;
+        if (st.reg) bytes += (long long)st.size;
     }
 }
 
@@ -100,18 +96,20 @@ bool is_perm_err(int e) { return e == EACCES || e == EPERM || e == EROFS; }
 
 // Не вышло из-за прав: открываем права на сам объект и (если это не защищённый каталог) на его родителя.
 void relax_perms(const std::string& p) {
-    chmod(p.c_str(), 0777);
+    if (smb_is_path(p)) return;
+    v_chmod(p, 0777);
     std::string par = fs_parent(p);
-    if (fs_danger(par) < 2) chmod(par.c_str(), 0777);
+    if (fs_danger(par) < 2) v_chmod(par, 0777);
 }
 
 void delete_tree(const std::string& p) {
     if (cancelled()) return;
     set_cur(p);
     tick();
-    struct stat st;
-    if (lstat(p.c_str(), &st) != 0) { add_error(p, fs_errname(errno)); return; }
-    if (S_ISDIR(st.st_mode)) {
+    VStat st;
+    int le = v_lstat(p, st);
+    if (le) { add_error(p, fs_errname(le)); return; }
+    if (st.dir) {
         std::vector<std::string> names;
         int e = 0;
         if (!list_dir(p, names, e) && is_perm_err(e)) {
@@ -124,40 +122,39 @@ void delete_tree(const std::string& p) {
             delete_tree(fs_join(p, n));
         }
         if (cancelled()) return;
-        if (rmdir(p.c_str()) != 0) {
-            int er = errno;
-            if (is_perm_err(er)) { relax_perms(p); if (rmdir(p.c_str()) == 0) { add_done(1, 0); return; } er = errno; }
+        int er = v_rmdir(p);
+        if (er != 0) {
+            if (is_perm_err(er)) { relax_perms(p); er = v_rmdir(p); if (er == 0) { add_done(1, 0); return; } }
             add_error(p, fs_errname(er));
         } else add_done(1, 0);
     } else {
-        long long sz = S_ISREG(st.st_mode) ? (long long)st.st_size : 0;
-        if (unlink(p.c_str()) != 0) {
-            int er = errno;
-            if (is_perm_err(er)) { relax_perms(p); if (unlink(p.c_str()) == 0) { add_done(1, sz); return; } er = errno; }
+        long long sz = st.reg ? (long long)st.size : 0;
+        int er = v_unlink(p);
+        if (er != 0) {
+            if (is_perm_err(er)) { relax_perms(p); er = v_unlink(p); if (er == 0) { add_done(1, sz); return; } }
             add_error(p, fs_errname(er));
         } else add_done(1, sz);
     }
 }
 
 // ---- копирование ----
-bool copy_file(const std::string& src, const std::string& dst, mode_t mode) {
-    int in = open(src.c_str(), O_RDONLY);
-    if (in < 0) { add_error(src, fs_errname(errno)); return false; }
-    int out = open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (out < 0) { int e = errno; close(in); add_error(dst, fs_errname(e)); return false; }
+bool copy_file(const std::string& src, const std::string& dst, uint32_t mode) {
+    VFile in, out;
+    int e = v_open_read(src, in);
+    if (e) { add_error(src, fs_errname(e)); return false; }
+    e = v_open_write(dst, out, 0600);
+    if (e) { v_close(in); add_error(dst, fs_errname(e)); return false; }
     std::vector<char> buf(1 << 20);
     bool ok = true;
     for (;;) {
         if (cancelled()) { ok = false; break; }
-        ssize_t r = read(in, buf.data(), buf.size());
-        if (r < 0 && errno == EINTR) continue;
-        if (r < 0) { add_error(src, fs_errname(errno)); ok = false; break; }
+        long r = v_read(in, buf.data(), buf.size());
+        if (r < 0) { add_error(src, fs_errname((int)-r)); ok = false; break; }
         if (r == 0) break;
         size_t off = 0;
         while (off < (size_t)r) {
-            ssize_t w = write(out, buf.data() + off, (size_t)r - off);
-            if (w < 0 && errno == EINTR) continue;
-            if (w <= 0) { add_error(dst, fs_errname(w < 0 ? errno : EIO)); ok = false; break; }
+            long w = v_write(out, buf.data() + off, (size_t)r - off);
+            if (w <= 0) { add_error(dst, fs_errname(w < 0 ? (int)-w : EIO)); ok = false; break; }
             off += (size_t)w;
         }
         if (!ok) break;
@@ -167,10 +164,10 @@ bool copy_file(const std::string& src, const std::string& dst, mode_t mode) {
         if (const char* slow = getenv("FM_SLOW_MS")) usleep((useconds_t)atoi(slow) * 1000);  // только для теста отмены
 #endif
     }
-    close(in);
-    close(out);
-    if (!ok) { unlink(dst.c_str()); return false; }
-    chmod(dst.c_str(), mode & 07777);
+    v_close(in);
+    v_close(out);
+    if (!ok) { v_unlink(dst); return false; }
+    v_chmod(dst, mode & 07777);
     add_done(1, 0);
     return true;
 }
@@ -179,13 +176,14 @@ void copy_tree(const std::string& src, const std::string& dst, bool overwrite) {
     if (cancelled()) return;
     set_cur(src);
     tick();
-    struct stat st;
-    if (lstat(src.c_str(), &st) != 0) { add_error(src, fs_errname(errno)); return; }
-    struct stat dt;
-    bool dst_exists = lstat(dst.c_str(), &dt) == 0;
-    if (S_ISDIR(st.st_mode)) {
-        if (dst_exists && !S_ISDIR(dt.st_mode)) { add_error(dst, "EEXIST"); return; }
-        if (!dst_exists && mkdir(dst.c_str(), 0777) != 0) { add_error(dst, fs_errname(errno)); return; }
+    VStat st;
+    int le = v_lstat(src, st);
+    if (le) { add_error(src, fs_errname(le)); return; }
+    VStat dt;
+    bool dst_exists = v_lstat(dst, dt) == 0;
+    if (st.dir) {
+        if (dst_exists && !dt.dir) { add_error(dst, "EEXIST"); return; }
+        if (!dst_exists) { int me = v_mkdir(dst, 0777); if (me) { add_error(dst, fs_errname(me)); return; } }
         add_done(1, 0);
         std::vector<std::string> names;
         int e = 0;
@@ -194,43 +192,46 @@ void copy_tree(const std::string& src, const std::string& dst, bool overwrite) {
             if (cancelled()) return;
             copy_tree(fs_join(src, n), fs_join(dst, n), overwrite);
         }
-        if (!dst_exists) chmod(dst.c_str(), st.st_mode & 07777);
-    } else if (S_ISLNK(st.st_mode)) {
+        if (!dst_exists) v_chmod(dst, st.mode & 07777);
+    } else if (st.lnk) {
+        if (smb_is_path(src) || smb_is_path(dst)) { add_error(src, "unsupported"); return; }
         char tgt[1024];
         ssize_t r = readlink(src.c_str(), tgt, sizeof(tgt) - 1);
         if (r <= 0) { add_error(src, fs_errname(errno)); return; }
         tgt[r] = 0;
         if (dst_exists) {
-            if (!overwrite || S_ISDIR(dt.st_mode)) { add_error(dst, "EEXIST"); return; }
+            if (!overwrite || dt.dir) { add_error(dst, "EEXIST"); return; }
             unlink(dst.c_str());
         }
         if (symlink(tgt, dst.c_str()) != 0) add_error(dst, fs_errname(errno));
         else add_done(1, 0);
-    } else if (S_ISREG(st.st_mode)) {
+    } else if (st.reg) {
         if (dst_exists) {
-            if (!overwrite || S_ISDIR(dt.st_mode)) {
+            if (!overwrite || dt.dir) {
                 add_error(dst, "EEXIST");
-                add_done(1, (long long)st.st_size);
+                add_done(1, (long long)st.size);
                 return;
             }
         }
-        copy_file(src, dst, st.st_mode);
+        copy_file(src, dst, st.mode);
     } else {
         add_error(src, "unsupported");
     }
 }
 
 // ---- смена прав ----
-void chmod_tree(const std::string& p, mode_t mode, bool recursive) {
+void chmod_tree(const std::string& p, uint32_t mode, bool recursive) {
     if (cancelled()) return;
     set_cur(p);
     tick();
-    struct stat st;
-    if (lstat(p.c_str(), &st) != 0) { add_error(p, fs_errname(errno)); return; }
-    if (S_ISLNK(st.st_mode)) { add_done(1, 0); return; }
-    if (chmod(p.c_str(), mode) != 0) add_error(p, fs_errname(errno));
+    VStat st;
+    int le = v_lstat(p, st);
+    if (le) { add_error(p, fs_errname(le)); return; }
+    if (st.lnk) { add_done(1, 0); return; }
+    int ce = v_chmod(p, mode);
+    if (ce) add_error(p, fs_errname(ce));
     else add_done(1, 0);
-    if (recursive && S_ISDIR(st.st_mode)) {
+    if (recursive && st.dir) {
         std::vector<std::string> names;
         int e = 0;
         if (!list_dir(p, names, e)) { add_error(p, fs_errname(e)); return; }
@@ -270,22 +271,23 @@ void worker(JobSpec spec) {
         if (cancelled() || spec.op == "size") break;
         std::string dst = fs_join(spec.dest, fs_basename(s));
         if (spec.op == "delete") delete_tree(s);
-        else if (spec.op == "chmod") chmod_tree(s, (mode_t)spec.mode, spec.recursive);
+        else if (spec.op == "chmod") chmod_tree(s, (uint32_t)spec.mode, spec.recursive);
         else if (spec.op == "copy") copy_tree(s, dst, spec.overwrite);
         else if (spec.op == "move") {
             if (s == dst) continue;
-            struct stat dt;
-            bool exists = lstat(dst.c_str(), &dt) == 0;
+            VStat dt;
+            bool exists = v_lstat(dst, dt) == 0;
             if (exists && !spec.overwrite) { add_error(dst, "EEXIST"); continue; }
             set_cur(s);
-            if (!exists && rename(s.c_str(), dst.c_str()) == 0) {
+            int rne = exists ? EEXIST : v_rename(s, dst);
+            if (!exists && rne == 0) {
                 long long f = 0, b = 0;
                 count_tree(dst, f, b);
                 add_total(f, b);
                 add_done(f, b);
                 continue;
             }
-            int e = errno;
+            int e = rne;
             if (!exists && e != EXDEV) { add_error(s, fs_errname(e)); continue; }
             // Другой раздел (или перезапись): копируем, затем удаляем исходник.
             long long f = 0, b = 0;
@@ -332,8 +334,13 @@ bool job_start(const JobSpec& spec, std::string& err) {
     if (two) {
         err = fs_check_modify(spec.dest, spec.unsafe, true);
         if (!err.empty()) return false;
-        struct stat st;
-        if (stat(spec.dest.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) { err = "bad_dest"; return false; }
+        if (smb_is_path(spec.dest)) {
+            VStat st;
+            if (v_lstat(spec.dest, st) != 0 || !st.dir) { err = "bad_dest"; return false; }
+        } else {
+            struct stat st;
+            if (stat(spec.dest.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) { err = "bad_dest"; return false; }
+        }
     }
     for (auto& s : spec.srcs) {
         if (s.empty() || s[0] != '/') { err = "bad_path"; return false; }
@@ -342,8 +349,8 @@ bool job_start(const JobSpec& spec, std::string& err) {
         if (two) {
             std::string dst = fs_join(spec.dest, fs_basename(s));
             if (spec.op == "copy" && dst == s) { err = "same_path"; return false; }
-            struct stat st;
-            if (lstat(s.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && fs_inside(s, dst) && dst != s) { err = "into_self"; return false; }
+            VStat st;
+            if (v_lstat(s, st) == 0 && st.dir && fs_inside(s, dst) && dst != s) { err = "into_self"; return false; }
         }
     }
     bool exp = false;

@@ -7,6 +7,7 @@
 #include "install.h"
 #include "jobs.h"
 #include "log.h"
+#include "smb.h"
 #include "platform.h"
 #include "version.h"
 #include <csignal>
@@ -17,6 +18,7 @@ int main() {
     signal(SIGPIPE, SIG_IGN);
     log_open(DATA_DIR);   // первым делом: по этому файлу видно, что программа дошла до main()
     app_log("version %s", APP_VERSION);
+    smb_load_config();
     int port = APP_PORT;
 #ifdef HOST_TEST
     if (const char* e = getenv("FM_PORT")) port = atoi(e);
@@ -24,6 +26,7 @@ int main() {
     int rc = http_run(port);
     job_shutdown();
     install_shutdown();
+    smb_shutdown();
     app_log("завершение, код %d", rc);
     if (rc == 0) notify("ps4commander: выключен");
     return rc;

@@ -3,6 +3,7 @@
 #include "json.h"
 #include "log.h"
 #include "platform.h"
+#include "smb.h"
 
 #include <atomic>
 #include <chrono>
@@ -256,6 +257,7 @@ bool install_start(const std::vector<std::string>& paths, std::string& err) {
     if (paths.empty()) { err = "bad_path"; return false; }
     std::vector<Item> add;
     for (auto& p : paths) {
+        if (smb_is_path(p)) { err = "smb_pkg"; return false; }
         if (p.size() < 5 || strcasecmp(p.c_str() + p.size() - 4, ".pkg") != 0) { err = "not_pkg"; return false; }
         std::string e = fs_check_read(p);
         if (!e.empty()) { err = e; return false; }
