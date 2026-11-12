@@ -373,7 +373,11 @@ bool install_start(const std::vector<std::string>& paths, std::string& err) {
     std::lock_guard<std::mutex> l(g_mu);
     if (!any_active()) { while (g_items.size() + add.size() > kMaxItems && !g_items.empty()) g_items.pop_front(); }
     else if (g_items.size() + add.size() > kMaxItems) { err = "busy"; return false; }
-    for (auto& i : add) g_items.push_back(i);
+    for (auto& i : add) {
+        bool dup = false;
+        for (auto& x : g_items) if (x.path == i.path && is_active(x)) dup = true;   // уже стоит в очереди или ставится
+        if (!dup) g_items.push_back(i);
+    }
     if (!g_thr_started) { cleanup_stale_stage(); g_thr_started = true; g_thr = std::thread(worker); }
     g_cv.notify_all();
     return true;
@@ -386,7 +390,7 @@ std::string install_json() {
     for (auto& i : g_items) {
         if (!first) o += ",";
         first = false;
-        o += "{\"n\":\"" + json_esc(i.name) + "\",\"cid\":\"" + json_esc(i.cid) + "\",\"st\":\"" + i.status + "\",\"msg\":\"" + json_esc(i.msg) +
+        o += "{\"n\":\"" + json_esc(i.name) + "\",\"p\":\"" + json_esc(i.path) + "\",\"cid\":\"" + json_esc(i.cid) + "\",\"st\":\"" + i.status + "\",\"msg\":\"" + json_esc(i.msg) +
              "\",\"total\":" + std::to_string(i.total) + ",\"done\":" + std::to_string(i.done) + "}";
     }
     return o + "]}";

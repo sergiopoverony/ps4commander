@@ -231,6 +231,7 @@ try:
         pg.keyboard.press('Enter')
         pg.wait_for_function('()=>/game.pkg/.test(document.querySelector(".dlg pre")&&document.querySelector(".dlg pre").textContent||"")', timeout=10000)
         check('очередь установки показана', True)
+        check('в очереди есть полоса прогресса', pg.evaluate('()=>/[\\u2593\\u2591]/.test(document.querySelector(".dlg pre").textContent)'))
         pg.wait_for_function('()=>/installed|установлено/.test(document.querySelector(".dlg pre").textContent)', timeout=15000)
         pg.keyboard.press('Escape')
         pg.wait_for_function('()=>!overlay.classList.contains("on")')
@@ -273,6 +274,20 @@ try:
         pg.keyboard.press('Escape')
         pg.wait_for_function('()=>!overlay.classList.contains("on")')
         pg.evaluate('(p)=>{panels[0].path=p;return refreshAll()}', saved_path)
+        pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="inner")')
+
+        # строка под панелями показывает полное имя выбранного файла
+        longn = 'very_long_file_name_' + 'x' * 120 + '.txt'
+        open(ROOT + '/docs/' + longn, 'w').write('1')
+        pg.evaluate('()=>refreshAll()')
+        pg.wait_for_function('(n)=>panels[0].entries.some(e=>e.n===n)', arg=longn)
+        pg.evaluate('(n)=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n===n);render(p);updateFoot(p)}', longn)
+        pg.evaluate('()=>{flashing=false;showName()}')
+        check('под панелями полное имя выбранного файла', pg.locator('#msg').inner_text().strip() == longn, pg.locator('#msg').inner_text())
+        pg.evaluate('()=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n==="inner");render(p);updateFoot(p)}')
+        check('у папки имя со слешем', pg.locator('#msg').inner_text().strip() == '/inner', pg.locator('#msg').inner_text())
+        os.remove(ROOT + '/docs/' + longn)
+        pg.evaluate('()=>refreshAll()')
         pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="inner")')
 
         # скачивание папки ZIP-архивом

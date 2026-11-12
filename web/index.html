@@ -54,7 +54,7 @@ body.unsafe #unsafeTag { display: inline; }
 .row .col-m { text-align: center; color: var(--sel); }
 .row .col-s, .row .col-d, .row .col-a { color: var(--dim); }
 .pf { border-top: 1px solid var(--border); color: var(--border); padding: 0 6px; display: flex; justify-content: space-between; gap: 10px; flex: none; white-space: nowrap; overflow: hidden; }
-#msg { flex: none; min-height: 20px; color: var(--sel); padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#msg { flex: none; min-height: 20px; max-height: 3.9em; line-height: 1.3; color: var(--sel); padding: 0 4px; white-space: normal; overflow: hidden; overflow-wrap: anywhere; }
 #keys { flex: none; display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; }
 #keys button { border: 0; background: var(--bar-bg); color: var(--bar-fg); height: 28px; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 4px; justify-content: flex-start; }
 #keys button i { font-style: normal; background: var(--bar-num); color: var(--bar-num-fg); padding: 0 4px; height: 100%; display: inline-flex; align-items: center; }
@@ -131,6 +131,7 @@ const TR = {
     binaryNoEdit:'This looks like a binary file; editing is disabled.', saved:'Saved', unsavedQ:'Close without saving?', save:'Save', newFileName:'New file name:', exists:'Already exists',
     typeDir:'Folder', typeFile:'File', typeLink:'Symbolic link', typeOther:'Other', fPath:'Path', fType:'Type', fSize:'Size', fMode:'Permissions', fOwner:'Owner', fTime:'Modified', fTarget:'Link target',
     objects:'objects', total:'Total', info:'Info',
+    pkgTotal:'Total',
     pkgFinding:'Looking for related packages', pkgFindingText:'Searching this folder and neighbouring folders for patches, DLC and other files of the same game...', pkgRelTitle:'Install with related packages', pkgRelHead:'Found for {tid} {title}. Tick what to install (the order is fixed: game, patches, DLC, localizations).', kGame:'game', kPatch:'patch', kDlc:'DLC', kRus:'localization', pkgTrunc:'The search was cut short (too many files), some packages may be missing.', pkgSel:'Install selected ({n})', why_backport_fw:'backport: not for this firmware', why_newer_patch:'a newer patch exists ({v})', why_incomplete:'not fully downloaded', pkgNoSel:'Nothing is selected',
     install:'Install PKG', installQ:'Install {n} via the system installer?', pkgTitle:'Package installation', pkgNone:'No .pkg files selected',
     stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
@@ -174,6 +175,7 @@ const TR = {
     binaryNoEdit:'Похоже на двоичный файл; правка отключена.', saved:'Сохранено', unsavedQ:'Закрыть без сохранения?', save:'Сохранить', newFileName:'Имя нового файла:', exists:'Уже существует',
     typeDir:'Папка', typeFile:'Файл', typeLink:'Символическая ссылка', typeOther:'Другое', fPath:'Путь', fType:'Тип', fSize:'Размер', fMode:'Права', fOwner:'Владелец', fTime:'Изменён', fTarget:'Цель ссылки',
     objects:'объектов', total:'Всего', info:'Свойства',
+    pkgTotal:'Всего',
     pkgFinding:'Поиск связанных пакетов', pkgFindingText:'Ищу в этой папке и соседних патчи, DLC и другие файлы этой же игры...', pkgRelTitle:'Установка со связанными пакетами', pkgRelHead:'Найдено для {tid} {title}. Отметьте, что ставить (порядок фиксированный: игра, патчи, DLC, русификаторы).', kGame:'игра', kPatch:'патч', kDlc:'DLC', kRus:'русификатор', pkgTrunc:'Поиск остановлен (слишком много файлов), часть пакетов могла не найтись.', pkgSel:'Установить выбранные ({n})', why_backport_fw:'backport: не для этой прошивки', why_newer_patch:'есть более новый патч ({v})', why_incomplete:'не докачан', pkgNoSel:'Ничего не выбрано',
     install:'Установить PKG', installQ:'Установить {n} штатным установщиком?', pkgTitle:'Установка пакетов', pkgNone:'Нет выбранных .pkg файлов',
     stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
@@ -249,13 +251,25 @@ async function api(path, body, method) {
   return j;
 }
 function setConn(ok) { $('#dot').classList.toggle('off', !ok); $('#dot').title = ok ? '' : t('noConn'); }
-let msgTimer = 0;
+let msgTimer = 0, flashing = false;
+// Строка под панелями: сообщение на 6 секунд, а в остальное время полное имя выбранного файла или папки (имена бывают длинными).
+function showName() {
+  if (flashing) return;
+  const p = panels[active];
+  const m = $('#msg');
+  const e = p && p.view[p.cur];
+  m.style.color = 'var(--sel)';
+  m.textContent = e ? (e.up ? '..' : ((e.t === 'd' || e.td) ? '/' : '') + e.n + (e.t === 'l' && e.l ? ' -> ' + e.l : '')) : '';
+}
 function say(text, bad) {
   const m = $('#msg');
-  m.textContent = text || '';
-  m.style.color = bad ? 'var(--warn)' : 'var(--sel)';
   clearTimeout(msgTimer);
-  if (text) msgTimer = setTimeout(() => { m.textContent = ''; }, 6000);
+  flashing = !!text;
+  if (text) {
+    m.textContent = text;
+    m.style.color = bad ? 'var(--warn)' : 'var(--sel)';
+    msgTimer = setTimeout(() => { flashing = false; showName(); }, 6000);
+  } else showName();
 }
 
 // ---------- панели ----------
@@ -392,6 +406,7 @@ function updateFoot(p) {
   p.head.firstChild.textContent = p.path;
   p.head.title = p.path;
   p.el.classList.toggle('danger1', p.danger === 1);
+  if (p.idx === active) showName();
 }
 // Путь на подключаемом диске (USB или расширенное хранилище)
 function isDiskPath(path) { return /^\/mnt\/(usb|ext)\d+(\/|$)/.test(path); }
@@ -771,6 +786,13 @@ function doInstall(only) {
     confirmBox(t('install'), t('installQ', { n }) + note, t('install'), () => installPaths(ts.map(e => join(p.path, e.n))));
   };
   if (ts.length !== 1) { plain(); return; }
+  const full = join(p.path, ts[0].n);
+  // пакет уже ставится или ждёт очереди: показываем окно установки
+  api('/api/pkg').then(q => {
+    if (q.items.some(i => i.p === full && (i.st === 'queued' || i.st === 'registering' || i.st === 'installing'))) { showPkgQueue(); return; }
+    findRelated();
+  }).catch(() => findRelated());
+  function findRelated() {
   // один пакет: ищем рядом патчи, DLC и прочее той же игры
   let stop = false;
   dialog(t('pkgFinding'), [t('pkgFindingText')], [{ label: t('cancel'), fn: closeDlg }]);
@@ -780,6 +802,7 @@ function doInstall(only) {
     dlgClose = null; closeDlg();
     if (j.items.length <= 1) plain(); else showRelated(j, p.path.startsWith('/smb/'));
   }).catch(() => { if (stop) return; dlgClose = null; closeDlg(); plain(); });
+  }
 }
 function showRelated(j, smb) {
   const kinds = ['kGame', 'kPatch', 'kDlc', 'kRus'];
@@ -820,9 +843,18 @@ function showPkgQueue() {
   const tick = async () => {
     let j;
     try { j = await api('/api/pkg'); } catch (e) { pollTimer = setTimeout(tick, 1500); return; }
-    box.textContent = j.items.slice(-30).map(i => {
-      const pc = i.total > 0 ? ' ' + Math.min(100, Math.floor(100 * i.done / i.total)) + '%' : '';
-      return i.n + '\n    ' + t(stName[i.st] || 'stQueued') + (i.st === 'installing' ? pc : '') + (i.msg ? '  ' + i.msg : '');
+    const bar = (done, total) => {
+      const pc = total > 0 ? Math.min(100, Math.floor(100 * done / total)) : 0, W = 24, k = Math.round(W * pc / 100);
+      return '\u2593'.repeat(k) + '\u2591'.repeat(W - k) + ' ' + pc + '%';
+    };
+    const shown = j.items.slice(-30);
+    let sd = 0, st = 0;
+    for (const i of shown) { st += i.total; sd += i.st === 'done' || i.st === 'already_installed' ? i.total : (i.st === 'installing' ? i.done : 0); }
+    const head = shown.length > 1 ? t('pkgTotal') + ' ' + bar(sd, st) + '\n\n' : '';
+    box.textContent = head + shown.map(i => {
+      const run = i.st === 'installing';
+      const full = i.st === 'done' || i.st === 'already_installed';
+      return i.n + '\n    ' + t(stName[i.st] || 'stQueued') + (i.msg ? '  ' + i.msg : '') + (run || full ? '\n    ' + bar(full ? i.total : i.done, i.total) : '');
     }).join('\n');
     pollTimer = setTimeout(tick, 1000);
   };
