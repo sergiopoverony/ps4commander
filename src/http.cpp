@@ -5,6 +5,7 @@
 #include "jobs.h"
 #include "json.h"
 #include "log.h"
+#include "zip.h"
 #include "platform.h"
 #include "version.h"
 
@@ -171,6 +172,29 @@ static void do_download(int fd, const std::string& n, bool inl) {
         if (!send_all(fd, buf.data(), (size_t)r)) break;
     }
     close(f);
+}
+
+// Папка (или несколько имён из одного каталога) одним ZIP-архивом, собираемым на лету.
+static void do_zip(int fd, const std::string& query) {
+    std::string err;
+    std::string dir = fs_normalize(qget(query, "dir"));
+    if (dir.empty()) { respond_err(fd, 400, "bad_path"); return; }
+    std::vector<std::string> names;
+    size_t i = 0;
+    while (i < query.size()) {
+        size_t j = query.find('&', i);
+        if (j == std::string::npos) j = query.size();
+        if (j - i > 2 && query.compare(i, 2, "n=") == 0) names.push_back(url_decode(query.substr(i + 2, j - i - 2)));
+        i = j + 1;
+    }
+    ZipPlan plan;
+    if (!zip_plan(dir, names, plan, err)) { respond_err(fd, err_status(err), err); return; }
+    std::string nm = names.size() == 1 ? names[0] : (dir == "/" ? std::string("archive") : fs_basename(dir));
+    app_log("zip: %s (%d записей, %lld байт)", nm.c_str(), (int)plan.entries.size(), (long long)plan.total);
+    send_head(fd, 200, "application/zip", (long long)plan.total, false,
+              "Content-Disposition: attachment; filename*=UTF-8''" + pct_encode(nm + ".zip") + "\r\n");
+    bool ok = zip_write(plan, [&](const char* p, size_t n) { return send_all(fd, p, n); });
+    if (!ok) app_log("zip: клиент прервал скачивание %s", nm.c_str());
 }
 
 // Загрузка файла с компьютера: тело запроса пишется прямо в файл (рядом с ним, потом переименование).
@@ -356,6 +380,7 @@ static void handle(int fd) {
             }
         } else if (path == "/api/job") respond_json(fd, 200, job_json());
         else if (path == "/api/pkg") respond_json(fd, 200, install_json());
+        else if (path == "/api/zip") do_zip(fd, query);
         else if (path == "/api/log") {
             size_t n = 8192;
             std::string t = log_tail(n);

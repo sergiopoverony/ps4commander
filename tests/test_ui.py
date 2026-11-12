@@ -234,6 +234,15 @@ try:
         pg.keyboard.press('Escape')
         pg.wait_for_function('()=>!overlay.classList.contains("on")')
 
+        # скачивание папки ZIP-архивом
+        pg.evaluate('()=>{const p=panels[0];p.sel.clear();p.cur=p.view.findIndex(e=>e.n==="inner");render(p)}')
+        with pg.expect_download(timeout=15000) as dl:
+            pg.keyboard.press('Control+d')
+        d = dl.value
+        check('Ctrl+D на папке: скачан ZIP', d.suggested_filename == 'inner.zip', d.suggested_filename)
+        import zipfile
+        check('ZIP читается', zipfile.ZipFile(d.path()).testzip() is None)
+
         # язык и тема
         pg.keyboard.press('F10')
         pg.select_option('.dlg select >> nth=1', 'ru')

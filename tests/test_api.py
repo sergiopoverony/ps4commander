@@ -243,6 +243,40 @@ try:
     shutil.rmtree(ROOT + '/cp'); os.unlink(big)
 
     # ----- завершение
+    # скачивание папки одним ZIP
+    import zipfile, io
+    Z = ROOT + '/zsrc'
+    os.makedirs(Z + '/top/empty'); os.makedirs(Z + '/top/вложенная')
+    open(Z + '/top/a.txt', 'w').write('alpha\n')
+    open(Z + '/top/вложенная/файл ё.bin', 'wb').write(os.urandom(700000))
+    open(Z + '/top/zero.dat', 'wb').close()
+    os.symlink('a.txt', Z + '/top/lnk')
+    open(Z + '/single.txt', 'w').write('one')
+    st, body, hd = raw('/api/zip?dir=%s&n=top' % urllib.parse.quote(Z))
+    check('zip: Content-Length совпадает с телом', st == 200 and int(hd['Content-Length']) == len(body), (st, hd.get('Content-Length'), len(body)))
+    check('zip: имя файла в заголовке', "top.zip" in hd['Content-Disposition'])
+    zf = zipfile.ZipFile(io.BytesIO(body))
+    check('zip: контрольные суммы верны', zf.testzip() is None)
+    names = sorted(zf.namelist())
+    check('zip: состав (папки, юникод, без ссылки)', names == sorted(['top/', 'top/a.txt', 'top/empty/', 'top/zero.dat', 'top/вложенная/', 'top/вложенная/файл ё.bin']), names)
+    check('zip: содержимое совпадает', zf.read('top/вложенная/файл ё.bin') == open(Z + '/top/вложенная/файл ё.bin', 'rb').read() and zf.read('top/a.txt') == b'alpha\n')
+    check('zip: права сохранены', (zf.getinfo('top/a.txt').external_attr >> 16) & 0o777 == os.stat(Z + '/top/a.txt').st_mode & 0o777)
+    st, body, hd = raw('/api/zip?dir=%s&n=top&n=single.txt' % urllib.parse.quote(Z))
+    zf = zipfile.ZipFile(io.BytesIO(body))
+    check('zip: несколько имён', zf.testzip() is None and 'single.txt' in zf.namelist() and 'top/a.txt' in zf.namelist() and 'zsrc.zip' in hd['Content-Disposition'])
+    st, body, _ = raw('/api/zip?dir=%s&n=..' % urllib.parse.quote(Z))
+    check('zip: имя с .. отклонено', st == 400, st)
+    st, body, _ = raw('/api/zip?dir=%s&n=nope' % urllib.parse.quote(Z))
+    check('zip: нет такого файла', st in (403, 404), st)
+    st, body, _ = raw('/api/zip?dir=%s&n=x' % urllib.parse.quote('/etc'))
+    check('zip: вне корня отклонено', st in (403, 404), st)
+    if os.environ.get('ZIP64'):
+        with open(Z + '/huge.bin', 'wb') as hf: hf.truncate((4 << 30) + 12345)
+        st, body, hd = raw('/api/zip?dir=%s&n=huge.bin' % urllib.parse.quote(Z))
+        zf = zipfile.ZipFile(io.BytesIO(body))
+        check('zip64: файл > 4 ГБ', int(hd['Content-Length']) == len(body) and zf.testzip() is None and zf.getinfo('huge.bin').file_size == (4 << 30) + 12345)
+        os.remove(Z + '/huge.bin')
+
     # обрыв соединения клиентом посреди скачивания/загрузки не должен ронять службу (SIGPIPE)
     import socket, struct
     open(ROOT + '/big.bin', 'wb').write(os.urandom(8 << 20))

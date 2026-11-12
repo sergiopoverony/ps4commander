@@ -8,6 +8,7 @@ Russian version: [docs/README_ru.md](docs/README_ru.md)
 - Two panels, keyboard control (F-keys, Tab, Insert/Space, `+`/`-` select by mask, `*` invert) and touch buttons.
 - Copy, move, delete, rename, new folder, new file, permissions (chmod), folder size, with progress and cancel.
 - Text viewer / hex viewer, image/audio/video preview, built-in text editor (up to 1 MB).
+- Download a folder (or several items) as a ZIP built on the fly, no temporary files (Ctrl+D).
 - Upload (button or drag-and-drop) and download.
 - Recursive file search with masks.
 - Install `.pkg` files via the system installer (BGFT), with a queue and progress (Enter on a `.pkg`).
