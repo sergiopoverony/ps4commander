@@ -146,7 +146,7 @@ std::string netfs_map(const std::string& root, const std::string& smb_path) {
 }
 
 #ifdef HOST_TEST
-bool netfs_root(std::string&, std::string& err) { err = "no_fw"; return false; }
+bool netfs_root(std::string&, std::string& err, bool) { err = "no_fw"; return false; }
 #else
 
 #define FUSE_USE_VERSION 26
@@ -335,9 +335,10 @@ __attribute__((no_stack_protector)) static int fuse_patch(void *td) {
 
 
 std::mutex g_mtx;
-struct fuse* g_fuse = nullptr;
-std::string g_root, g_fail;
-bool g_mounted = false;
+// Два возможных монтирования: [0] в /data/pkg, [1] на флешке. Каждое живёт до перезагрузки консоли.
+struct Mnt { struct fuse* fuse = nullptr; std::string root; bool mounted = false; };
+Mnt g_mnt[2];
+std::string g_fail;
 
 // --- операции FUSE ---
 std::atomic<unsigned> g_ops{0};
@@ -377,12 +378,13 @@ int fs_statfs(const char*, struct statvfs* sv) { return nf_statfs(sv); }
 int fs_flush(const char*, struct fuse_file_info*) { return 0; }
 int fs_access(const char* path, int) { struct stat st; return nf_getattr(path, &st); }
 
-void* fuse_thread(void*) {
-    app_log("netfs: %s: обслуживание запущено", g_root.c_str());
-    int r = fuse_loop(g_fuse);
+void* fuse_thread(void* arg) {
+    Mnt* m = (Mnt*)arg;
+    app_log("netfs: %s: обслуживание запущено", m->root.c_str());
+    int r = fuse_loop(m->fuse);
     app_log("netfs: fuse_loop вернул %d", r);
     std::lock_guard<std::mutex> l(g_mtx);
-    g_mounted = false;
+    m->mounted = false;
     return nullptr;
 }
 
@@ -414,16 +416,21 @@ bool probe_devices(bool* enxio) {
 
 }  // namespace
 
-bool netfs_root(std::string& root, std::string& err) {
+bool netfs_root(std::string& root, std::string& err, bool usb) {
+    Mnt& M = g_mnt[usb ? 1 : 0];
     std::lock_guard<std::mutex> l(g_mtx);
-    if (g_mounted) { root = g_root; return true; }
+    if (M.mounted) { root = M.root; return true; }
     if (!g_fail.empty()) { err = g_fail; return false; }   // ядро второй раз не трогаем
-    // Где монтировать. Системный установщик хорошо читает /data/pkg (проверено на консоли), поэтому сначала там;
-    // если ядро откажется - на флешке (PS4Mount монтирует только туда).
-    std::vector<std::string> parents = {"/data/pkg/ps4commander_nas"};
-    for (int i = 0; i < 8; i++) {
-        std::string m = "/mnt/usb" + std::to_string(i);
-        if (is_mount(m)) { parents.push_back(m + "/ps4commander_nas"); break; }
+    // Системный установщик читает pkg с диска, который сам смонтировал; по данным PS4Mount это флешка (/mnt/usbN).
+    // /data/pkg он читает как обычную папку, а как точку монтирования FUSE - проверяется на консоли.
+    std::vector<std::string> parents;
+    if (!usb) parents.push_back("/data/pkg/ps4commander_nas");
+    else {
+        for (int i = 0; i < 8 && parents.empty(); i++) {
+            std::string m = "/mnt/usb" + std::to_string(i);
+            if (is_mount(m)) parents.push_back(m + "/ps4commander_nas");
+        }
+        if (parents.empty()) { err = "no_usb"; return false; }
     }
     g_kp = kp_for(kernel_get_fw_version());
     if (!g_kp && access("/dev/fuse0", F_OK)) { err = g_fail = "no_fw"; app_log("netfs: для этой прошивки нет патча fusefs"); return false; }
@@ -460,20 +467,20 @@ bool netfs_root(std::string& root, std::string& err) {
         char* argv[] = {a0, const_cast<char*>(c.c_str()), a2, a3, a4, a5, a6, nullptr};
         char* mountpoint = nullptr;
         int mt = 0;
-        g_fuse = fuse_setup(7, argv, &ops, sizeof(ops), &mountpoint, &mt, nullptr);
-        if (g_fuse) { mnt = c; break; }
+        M.fuse = fuse_setup(7, argv, &ops, sizeof(ops), &mountpoint, &mt, nullptr);
+        if (M.fuse) { mnt = c; break; }
         bool en = false; probe_devices(&en);
         app_log("netfs: ядро отказалось монтировать %s%s", c.c_str(), en ? " (нужна перезагрузка payload)" : "");
         if (en) { err = "reload"; return false; }
     }
     if (mnt.empty()) { g_fail = err; return false; }
-    g_root = mnt;
-    g_mounted = true;
+    M.root = mnt;
+    M.mounted = true;
     pthread_t th;
-    if (pthread_create(&th, nullptr, fuse_thread, nullptr)) { g_mounted = false; err = g_fail = "mount"; return false; }
+    if (pthread_create(&th, nullptr, fuse_thread, &M)) { M.mounted = false; err = g_fail = "mount"; return false; }
     pthread_detach(th);
     app_log("netfs: смонтировано в %s", mnt.c_str());
-    root = g_root;
+    root = M.root;
     return true;
 }
 #endif

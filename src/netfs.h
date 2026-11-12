@@ -18,6 +18,7 @@ int nf_statfs(struct statvfs* sv);
 
 // Монтирует (один раз за запуск) и возвращает путь папки, в которой лежат шары как каталоги.
 // false: err = no_usb, no_fw, no_fuse, reload, mount (причина пишется в лог).
-bool netfs_root(std::string& root, std::string& err);
+// usb=false: точка монтирования в /data/pkg, usb=true: на подключённой флешке (no_usb, если её нет).
+bool netfs_root(std::string& root, std::string& err, bool usb = false);
 // "/smb/alias/a/b.pkg" -> "<root>/alias/a/b.pkg"
 std::string netfs_map(const std::string& root, const std::string& smb_path);

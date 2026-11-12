@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <cerrno>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/statvfs.h>
 #include <sys/stat.h>
 #include <thread>
@@ -271,21 +272,37 @@ std::string hx(int v) { snprintf(hexbuf, sizeof(hexbuf), "0x%08X", (unsigned)v);
 const int kSourceRefused = 1;
 
 int run_item_inner(Item* it, bool final_try);
+// Читает начало файла через монтирование FUSE так же, как это делал бы любой процесс: видно, что ядро и наш FUSE работают.
+void fuse_selfcheck(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) { app_log("netfs: самопроверка: open %s -> errno %d", path.c_str(), errno); return; }
+    unsigned char m[4] = {0};
+    ssize_t n = read(fd, m, 4);
+    close(fd);
+    app_log("netfs: самопроверка чтения: %d байт, %02X %02X %02X %02X (ждём 7F 43 4E 54)", (int)n, m[0], m[1], m[2], m[3]);
+}
+
 void run_item(Item* it) {
     if (!smb_is_path(it->path)) { run_item_inner(it, true); return; }
     if (g_cancel || g_stop) { set(it, "cancelled"); return; }
-    std::string root, e;
     set(it, "registering");
-    if (!netfs_root(root, e)) {
-        app_log("установка %s: FUSE недоступен (%s)", it->name.c_str(), e.c_str());
-        set(it, "failed", "fuse: " + e);
-        return;
+    // Сначала монтирование в /data/pkg; если система не принимает пакет оттуда (0x8099006A), монтируем на флешке (как PS4Mount).
+    for (int k = 0; k < 2; k++) {
+        std::string root, e;
+        if (!netfs_root(root, e, k == 1)) {
+            app_log("установка %s: FUSE%s недоступен (%s)", it->name.c_str(), k ? " на флешке" : "", e.c_str());
+            if (k == 0) { set(it, "failed", "fuse: " + e); return; }
+            break;
+        }
+        { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
+        app_log("установка %s: папка FUSE %s", it->name.c_str(), it->src.c_str());
+        fuse_selfcheck(it->src);
+        int r = run_item_inner(it, k == 1);
+        { std::lock_guard<std::mutex> l(g_mu); it->src.clear(); }
+        if (r != kSourceRefused) return;
+        app_log("установка %s: система не приняла папку FUSE %s", it->name.c_str(), k ? "на флешке" : "в /data/pkg");
     }
-    { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
-    app_log("установка %s: папка FUSE %s", it->name.c_str(), it->src.c_str());
-    run_item_inner(it, true);
-    std::lock_guard<std::mutex> l(g_mu);
-    it->src.clear();
+    set(it, "failed", "register 0x8099006A (FUSE не принят; подключите флешку)");
 }
 
 int run_item_inner(Item* it, bool final_try) {
