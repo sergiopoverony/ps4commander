@@ -468,7 +468,14 @@ static void handle(int fd) {
     if (method == "GET" || is_head) {
         std::string err;
         if (path == "/" || path == "/index.html")
-            respond(fd, 200, "text/html; charset=utf-8", (const char*)ASSET_INDEX_HTML, ASSET_INDEX_HTML_LEN);
+        {
+            // выбранная тема подставляется в страницу на сервере, чтобы она не мигала классической при загрузке
+            std::string th = json_parse(state_read()).get_str("theme");
+            std::string page((const char*)ASSET_INDEX_HTML, ASSET_INDEX_HTML_LEN);
+            size_t tp = page.find("__THEME__");
+            if (tp != std::string::npos) page.replace(tp, 9, theme_ok(th) ? th : "classic");
+            respond(fd, 200, "text/html; charset=utf-8", page.data(), page.size());
+        }
         else if (path == "/lang/index.json")
             respond(fd, 200, "application/json; charset=utf-8", (const char*)ASSET_LANG_INDEX, ASSET_LANG_INDEX_LEN);
         else if (path.compare(0, 6, "/lang/") == 0 && path.size() > 11 && path.compare(path.size() - 5, 5, ".json") == 0) {

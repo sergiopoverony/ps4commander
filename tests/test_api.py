@@ -284,6 +284,8 @@ try:
     st, j = post('/api/state', {'theme': 'light'})
     st, j = get('/api/state')
     check('state: тема сохраняется и пути не теряются', j.get('theme') == 'light' and j.get('l') == ROOT + '/src', j)
+    st, body, _ = raw('/')
+    check('страница приходит с выбранной темой (без мигания)', b'data-theme="light"' in body, body[:200])
     st, j = post('/api/state', {'theme': 'neon'})
     check('state: неизвестная тема отклонена', st == 400, (st, j))
     st, j = post('/api/state', {'l': ROOT + '/src'})

@@ -363,6 +363,7 @@ try:
         pg.keyboard.press('F10')
         pg.select_option('.dlg select >> nth=1', 'ru')
         pg.wait_for_function('()=>document.querySelector("#keys").textContent.includes("Копия")')
+        check('язык меняется на лету: меню осталось открытым и переведено', pg.evaluate('()=>overlay.classList.contains("on")') and 'Тема' in pg.locator('.dlg').inner_text())
         check('язык переключается на русский', 'Удалить' in pg.locator('#keys').inner_text())
         pg.keyboard.press('F10')
         pg.select_option('.dlg select >> nth=0', 'dark')
@@ -387,6 +388,7 @@ try:
         pg.evaluate('()=>{try{localStorage.clear()}catch(e){}}')
         pg.reload()
         pg.wait_for_function('()=>stateReady')
+        check('тема уже в разметке до выполнения скриптов', pg.evaluate('()=>document.documentElement.getAttribute("data-theme")') == 'dark')
         check('тема читается из файла на консоли при запуске', pg.evaluate('()=>document.documentElement.getAttribute("data-theme")') == 'dark')
 
         # мобильный размер
