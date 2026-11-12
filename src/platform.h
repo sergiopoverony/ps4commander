@@ -15,3 +15,5 @@ std::string local_ip();
 void notify(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 // Сбрасывает таймер сна консоли. Вызывать не реже раза в ~10 с во время долгой операции.
 void keep_awake_tick();
+// Своя подсеть: адрес и маска хоста (в порядке байт хоста). false, если определить не удалось.
+bool local_subnet(unsigned& ip, unsigned& mask);

@@ -10,7 +10,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <arpa/inet.h>
+#include <atomic>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <thread>
 #include <mutex>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,6 +24,8 @@
 extern "C" {
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
+#include <smb2/libsmb2-share-enum.h>
+void smb2_free_data(struct smb2_context* smb2, void* ptr);
 }
 
 namespace {
@@ -453,7 +461,157 @@ void smb_close(SmbFile* f) {
     delete f;
 }
 
+// ---- сканирование сети ----
+namespace {
+std::mutex g_scan_mx;
+bool g_scan_running = false, g_scan_cancel = false;
+unsigned g_scan_done = 0, g_scan_total = 0;
+std::vector<std::string> g_scan_found;
+std::thread g_scan_thr;
+
+std::string ip_str(unsigned a) {
+    char b[32];
+    snprintf(b, sizeof(b), "%u.%u.%u.%u", (a >> 24) & 255, (a >> 16) & 255, (a >> 8) & 255, a & 255);
+    return b;
+}
+
+void scan_worker(std::vector<unsigned> hosts) {
+    const size_t kBatch = 64;
+    auto last_tick = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < hosts.size(); i += kBatch) {
+        {
+            std::lock_guard<std::mutex> l(g_scan_mx);
+            if (g_scan_cancel) break;
+        }
+        size_t n = std::min(kBatch, hosts.size() - i);
+        std::vector<struct pollfd> pf;
+        std::vector<unsigned> who;
+        for (size_t k = 0; k < n; k++) {
+            int s = socket(AF_INET, SOCK_STREAM, 0);
+            if (s < 0) continue;
+            fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
+            struct sockaddr_in sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sin_family = AF_INET;
+            sa.sin_port = htons(445);
+            sa.sin_addr.s_addr = htonl(hosts[i + k]);
+            int r = connect(s, (struct sockaddr*)&sa, sizeof(sa));
+            if (r != 0 && errno != EINPROGRESS) { close(s); continue; }
+            struct pollfd p;
+            p.fd = s; p.events = POLLOUT; p.revents = 0;
+            pf.push_back(p);
+            who.push_back(hosts[i + k]);
+        }
+        // ждём до 700 мс, пока соединения завершатся
+        auto t0 = std::chrono::steady_clock::now();
+        std::vector<bool> fin(pf.size(), false);
+        for (;;) {
+            int left = 700 - (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            if (left <= 0) break;
+            int pr = poll(pf.data(), (nfds_t)pf.size(), left);
+            if (pr <= 0) break;
+            bool all = true;
+            for (size_t k = 0; k < pf.size(); k++) {
+                if (fin[k]) continue;
+                if (pf[k].revents) {
+                    int err = 0;
+                    socklen_t el = sizeof(err);
+                    getsockopt(pf[k].fd, SOL_SOCKET, SO_ERROR, &err, &el);
+                    fin[k] = true;
+                    pf[k].fd = -pf[k].fd - 1;   // poll пропускает отрицательные дескрипторы; настоящий восстановим при закрытии
+                    if (err == 0) {
+                        std::lock_guard<std::mutex> l(g_scan_mx);
+                        g_scan_found.push_back(ip_str(who[k]));
+                    }
+                } else all = false;
+            }
+            if (all) break;
+        }
+        for (size_t k = 0; k < pf.size(); k++) close(pf[k].fd < 0 ? -pf[k].fd - 1 : pf[k].fd);
+        {
+            std::lock_guard<std::mutex> l(g_scan_mx);
+            g_scan_done += (unsigned)n;
+        }
+        if (std::chrono::steady_clock::now() - last_tick > std::chrono::seconds(5)) { keep_awake_tick(); last_tick = std::chrono::steady_clock::now(); }
+    }
+    std::lock_guard<std::mutex> l(g_scan_mx);
+    std::sort(g_scan_found.begin(), g_scan_found.end(), [](const std::string& a, const std::string& b) {
+        unsigned x[4] = {0}, y[4] = {0};
+        sscanf(a.c_str(), "%u.%u.%u.%u", &x[0], &x[1], &x[2], &x[3]);
+        sscanf(b.c_str(), "%u.%u.%u.%u", &y[0], &y[1], &y[2], &y[3]);
+        for (int k = 0; k < 4; k++) if (x[k] != y[k]) return x[k] < y[k];
+        return false;
+    });
+    g_scan_running = false;
+}
+}  // namespace
+
+bool smb_scan_start(std::string& err) {
+    unsigned ip = 0, mask = 0;
+    if (!local_subnet(ip, mask)) { err = "no_net"; return false; }
+    // слишком большую сеть ограничиваем до /22 (1022 адреса), иначе берём /24 вокруг своего адреса
+    unsigned hostbits = 0;
+    for (unsigned m = ~mask; m; m >>= 1) hostbits++;
+    if (hostbits > 10) { mask = 0xFFFFFF00u; }
+    unsigned net = ip & mask, bcast = net | ~mask;
+    std::vector<unsigned> hosts;
+    if (mask == 0xFFFFFFFFu) hosts.push_back(ip);
+    else for (unsigned a = net + 1; a < bcast; a++) if (a != ip) hosts.push_back(a);
+    if (hosts.empty()) { err = "no_net"; return false; }
+    std::lock_guard<std::mutex> l(g_scan_mx);
+    if (g_scan_running) { err = "busy"; return false; }
+    if (g_scan_thr.joinable()) g_scan_thr.join();
+    g_scan_running = true; g_scan_cancel = false;
+    g_scan_done = 0; g_scan_total = (unsigned)hosts.size();
+    g_scan_found.clear();
+    g_scan_thr = std::thread(scan_worker, hosts);
+    return true;
+}
+
+std::string smb_scan_json() {
+    std::lock_guard<std::mutex> l(g_scan_mx);
+    std::string o = "{\"running\":" + std::string(g_scan_running ? "true" : "false") + ",\"done\":" + std::to_string(g_scan_done) +
+                    ",\"total\":" + std::to_string(g_scan_total) + ",\"found\":[";
+    for (size_t i = 0; i < g_scan_found.size(); i++) o += (i ? "," : "") + std::string("\"") + g_scan_found[i] + "\"";
+    return o + "]}";
+}
+
+bool smb_list_shares(const SmbConn& c0, std::vector<std::string>& out, std::string& err) {
+    SmbConn c = c0;
+    if (!valid_host(c.host)) { err = "bad_host"; return false; }
+    if (c.user.size() > 128 || c.pass.size() > 256 || c.domain.size() > 128) { err = "bad_value"; return false; }
+    c.share = "IPC$";
+    struct smb2_context* ctx = nullptr;
+    int r = make_ctx(c, &ctx);
+    if (r != 0) { err = r == EACCES || r == EPERM ? "smb_auth" : "E" + std::string(r == ECONNREFUSED ? "CONNREFUSED" : r == ETIMEDOUT ? "TIMEDOUT" : r == EHOSTUNREACH ? "HOSTUNREACH" : "IO"); return false; }
+    struct smb2_share_enum_reply* rep = smb2_share_enum_sync(ctx, SMB2_SHARE_INFO_1);
+    if (!rep) {
+        app_log("smb: список папок %s: %s", c.host.c_str(), smb2_get_error(ctx));
+        smb2_disconnect_share(ctx); smb2_destroy_context(ctx);
+        err = "smb_enum";
+        return false;
+    }
+    out.clear();
+    for (uint32_t i = 0; i < rep->entries_read; i++) {
+        const struct smb2_share_info_1& s = rep->share_info.info_1[i];
+        if (!s.netname) continue;
+        if ((s.type & 0xFFFF) != SMB2_SHARE_TYPE_DISKTREE || (s.type & SMB2_SHARE_TYPE_HIDDEN)) continue;
+        size_t nl = strlen(s.netname);
+        if (nl == 0 || s.netname[nl - 1] == '$') continue;   // скрытые и служебные (IPC$, ADMIN$, C$)
+        out.push_back(s.netname);
+    }
+    smb2_free_data(ctx, rep);
+    smb2_disconnect_share(ctx); smb2_destroy_context(ctx);
+    std::sort(out.begin(), out.end());
+    return true;
+}
+
 void smb_shutdown() {
+    {
+        std::lock_guard<std::mutex> l(g_scan_mx);
+        g_scan_cancel = true;
+    }
+    if (g_scan_thr.joinable()) g_scan_thr.join();
     std::vector<Ctx*> all;
     {
         std::lock_guard<std::mutex> l(g_mx);

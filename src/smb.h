@@ -48,4 +48,10 @@ long smb_read(SmbFile* f, uint64_t off, void* buf, size_t n);
 long smb_write(SmbFile* f, uint64_t off, const void* buf, size_t n);
 void smb_close(SmbFile* f);
 
+// ---- поиск серверов в локальной сети (порт 445) и список общих папок ----
+bool smb_scan_start(std::string& err);   // err: busy, no_net
+std::string smb_scan_json();
+// Общие папки (диски) сервера. err: код ошибки подключения (smb_auth, ECONNREFUSED, ...).
+bool smb_list_shares(const SmbConn& c, std::vector<std::string>& out, std::string& err);
+
 void smb_shutdown();

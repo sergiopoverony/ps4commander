@@ -141,6 +141,8 @@ const TR = {
     e_bad_alias:'Invalid name', e_bad_host:'Invalid server address', e_bad_share:'Invalid share name', e_ECONNREFUSED:'Connection refused (is SMB enabled on the server?)',
     e_ETIMEDOUT:'Server did not answer in time', e_EHOSTUNREACH:'Server is unreachable', e_ENETUNREACH:'Network is unreachable', e_ECONNRESET:'Connection to the server was lost', e_ENOTCONN:'Not connected to the server',
     installSmbNote:'The package is on a network folder: the system installer will read it over the network (experimental, may be slow).',
+    smbFind:'Find servers on the network', smbFinding:'Scanning the network... {d}/{t}', smbFound:'Found servers: {n}', smbFoundNone:'No SMB servers found', smbShares:'List shares', smbSharesN:'Shares found: {n}',
+    e_smb_enum:'Could not get the list of shares (try entering the name manually)', e_no_net:'Cannot determine the local network',
     helpTitle:'Keys',
     helpBody:'Tab - switch panel\nUp/Down/PgUp/PgDn/Home/End - move\nEnter - open folder / view file / install .pkg\nBackspace - parent folder\nInsert or Space - select\n+ / - / * - select all / none / invert\nF2 - refresh   F3 - view   F4 - edit text   Shift+F4 - new file\nF5 - copy   F6 - move   Shift+F6 - rename   F7 - new folder\nF8 or Delete - delete   F9 - permissions   I - install selected .pkg   N - network folders (SMB)\n+ / - select / deselect by mask   * invert   Ctrl+A all\nCtrl+F or Alt+F7 - find files   Alt+Enter - properties   Ctrl+G - go to path\nF10 or Esc - menu\n\nCtrl+D - download (a folder or several items come as a ZIP)\n\nDrag files from your computer onto a panel to upload them.\nOn a touch screen: tap a row to select the cursor, tap again to open, tap the left cell to mark.'
   },
@@ -181,6 +183,8 @@ const TR = {
     e_bad_alias:'Недопустимое имя', e_bad_host:'Недопустимый адрес сервера', e_bad_share:'Недопустимое имя общей папки', e_ECONNREFUSED:'Соединение отклонено (включён ли SMB на сервере?)',
     e_ETIMEDOUT:'Сервер не ответил вовремя', e_EHOSTUNREACH:'Сервер недоступен', e_ENETUNREACH:'Сеть недоступна', e_ECONNRESET:'Соединение с сервером потеряно', e_ENOTCONN:'Нет соединения с сервером',
     installSmbNote:'Пакет лежит в сетевой папке: системный установщик будет читать его по сети (экспериментально, может быть медленно).',
+    smbFind:'Найти серверы в сети', smbFinding:'Поиск в сети... {d}/{t}', smbFound:'Найдено серверов: {n}', smbFoundNone:'SMB-серверов не найдено', smbShares:'Показать папки', smbSharesN:'Найдено папок: {n}',
+    e_smb_enum:'Не удалось получить список папок (введите имя вручную)', e_no_net:'Не удалось определить локальную сеть',
     helpTitle:'Клавиши',
     helpBody:'Tab - сменить панель\nВверх/Вниз/PgUp/PgDn/Home/End - перемещение\nEnter - открыть папку / просмотреть файл / установить .pkg\nBackspace - на уровень выше\nInsert или Пробел - отметить\n+ / - / * - отметить всё / снять / инвертировать\nF2 - обновить   F3 - просмотр   F4 - правка текста   Shift+F4 - новый файл\nF5 - копировать   F6 - перенести   Shift+F6 - переименовать   F7 - новая папка\nF8 или Delete - удалить   F9 - права   I - установить отмеченные .pkg   N - сетевые папки (SMB)\n+ / - отметить / снять по маске   * инвертировать   Ctrl+A всё\nCtrl+F или Alt+F7 - поиск файлов   Alt+Enter - свойства   Ctrl+G - перейти по пути\nF10 или Esc - меню\n\nCtrl+D - скачать (папка или несколько объектов приходят ZIP-архивом)\n\nПеретащите файлы с компьютера на панель, чтобы загрузить их.\nНа сенсорном экране: касание строки ставит курсор, повторное открывает, касание левой ячейки отмечает.'
   }
@@ -806,16 +810,45 @@ function editSmb(c) {
   if (c) f.alias.i.disabled = true;
   f.pass.i.setAttribute('autocomplete', 'new-password');
   const st = h('div', { class: 'kv' });
+  // подсказки адресов (результат поиска) и общих папок
+  const hostList = h('datalist', { id: 'smbHosts' }), shareList = h('datalist', { id: 'smbShares' });
+  f.host.i.setAttribute('list', 'smbHosts'); f.share.i.setAttribute('list', 'smbShares');
+  let scanTimer = 0;
+  const findBtn = h('button', { onclick: async () => {
+    clearTimeout(scanTimer);
+    try { await api('/api/smb/scan', {}); } catch (e) { if (e.code !== 'busy') { st.textContent = errText(e.code); return; } }
+    const poll = async () => {
+      let j; try { j = await api('/api/smb/scan'); } catch (e) { st.textContent = errText(e.code); return; }
+      hostList.replaceChildren(...j.found.map(ip => h('option', { value: ip })));
+      if (j.running) { st.textContent = t('smbFinding', { d: j.done, t: j.total }) + (j.found.length ? '  (' + j.found.join(', ') + ')' : ''); scanTimer = setTimeout(poll, 700); return; }
+      st.textContent = j.found.length ? t('smbFound', { n: j.found.length }) + ': ' + j.found.join(', ') : t('smbFoundNone');
+      if (j.found.length && !f.host.i.value) f.host.i.value = j.found[0];
+    };
+    poll();
+  } }, t('smbFind'));
+  const sharesBtn = h('button', { onclick: async () => {
+    const b = { host: f.host.i.value.trim(), user: f.user.i.value.trim(), pass: f.pass.i.value, domain: f.domain.i.value.trim(), alias: f.alias.i.value.trim() };
+    if (!b.host) return;
+    st.textContent = t('smbConnecting');
+    try {
+      const j = await api('/api/smb/shares', b);
+      shareList.replaceChildren(...j.shares.map(n => h('option', { value: n })));
+      st.textContent = t('smbSharesN', { n: j.shares.length }) + (j.shares.length ? ': ' + j.shares.join(', ') : '');
+      if (j.shares.length && !f.share.i.value) f.share.i.value = j.shares[0];
+    } catch (e) { st.textContent = errText(e.code); }
+  } }, t('smbShares'));
   const save = async () => {
     st.textContent = t('smbConnecting');
     const body = {}; for (const k in f) body[k] = f[k].i.value.trim();
     body.pass = f.pass.i.value;  // пароль не обрезаем
     try { await api('/api/smb/save', body); }
     catch (e) { st.textContent = errText(e.code); return; }
-    closeDlg(); say(t('smbSaved')); await refreshAll();
+    clearTimeout(scanTimer); closeDlg(); say(t('smbSaved')); await refreshAll();
     load(panels[active], '/smb/' + body.alias, null);
   };
-  dialog(t('smbTitle'), [...Object.values(f).map(x => x.row), st], [{ label: t('smbSave'), primary: true, fn: save }, { label: t('cancel'), fn: () => { closeDlg(); showSmb(); } }]);
+  dialog(t('smbTitle'), [f.alias.row, f.host.row, h('div', { class: 'btns' }, findBtn), f.user.row, f.pass.row, f.domain.row, f.share.row, h('div', { class: 'btns' }, sharesBtn), hostList, shareList, st],
+    [{ label: t('smbSave'), primary: true, fn: save }, { label: t('cancel'), fn: () => { clearTimeout(scanTimer); closeDlg(); showSmb(); } }]);
+  dlgClose = () => clearTimeout(scanTimer);
   for (const k in f) f[k].i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); save(); } });
   (c ? f.pass.i : f.alias.i).focus();
 }

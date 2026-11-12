@@ -77,6 +77,28 @@ std::string local_ip() {
     return found;
 }
 
+bool local_subnet(unsigned& ip, unsigned& mask) {
+#ifdef HOST_TEST
+    ip = 0x7F000001; mask = 0xFFFFFFFF;   // в тестах «сеть» - один адрес 127.0.0.1
+    return true;
+#else
+    bool ok = false;
+    struct ifaddrs* ifa = nullptr;
+    if (getifaddrs(&ifa) == 0) {
+        for (struct ifaddrs* p = ifa; p && !ok; p = p->ifa_next) {
+            if (!p->ifa_addr || !p->ifa_netmask || p->ifa_addr->sa_family != AF_INET) continue;
+            if (!(p->ifa_flags & IFF_UP) || (p->ifa_flags & IFF_LOOPBACK)) continue;
+            uint32_t a = ntohl(((struct sockaddr_in*)p->ifa_addr)->sin_addr.s_addr);
+            uint32_t m = ntohl(((struct sockaddr_in*)p->ifa_netmask)->sin_addr.s_addr);
+            if (a == 0 || (a >> 24) == 127 || (a >> 16) == 0xA9FE || m == 0) continue;
+            ip = a; mask = m; ok = true;
+        }
+        freeifaddrs(ifa);
+    }
+    return ok;
+#endif
+}
+
 void notify(const char* fmt, ...) {
     char buf[1024];
     va_list ap;

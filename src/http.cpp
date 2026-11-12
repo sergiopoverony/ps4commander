@@ -402,6 +402,18 @@ static void handle_post(int fd, const std::string& path, const std::string& body
         c.user = j.get_str("user"); c.pass = j.get_str("pass"); c.domain = j.get_str("domain");
         if (smb_save(c, err)) respond_json(fd, 200, "{\"ok\":true}");
         else respond_err(fd, err == "write_failed" ? 500 : 400, err);
+    } else if (path == "/api/smb/scan") {
+        if (smb_scan_start(err)) respond_json(fd, 200, "{\"ok\":true}"); else respond_err(fd, err_status(err), err);
+    } else if (path == "/api/smb/shares") {
+        SmbConn c;
+        c.host = j.get_str("host"); c.user = j.get_str("user"); c.pass = j.get_str("pass"); c.domain = j.get_str("domain");
+        std::string al = j.get_str("alias");
+        if (c.pass.empty() && !al.empty()) { SmbConn old; if (smb_get(al, old)) c.pass = old.pass; }   // при правке сохранённого подключения
+        std::vector<std::string> sh;
+        if (!smb_list_shares(c, sh, err)) { respond_err(fd, 400, err); return; }
+        std::string o = "{\"shares\":[";
+        for (size_t i = 0; i < sh.size(); i++) o += (i ? "," : "") + std::string("\"") + json_esc(sh[i]) + "\"";
+        respond_json(fd, 200, o + "]}");
     } else if (path == "/api/smb/del") {
         if (smb_remove(j.get_str("alias"))) respond_json(fd, 200, "{\"ok\":true}");
         else respond_err(fd, 404, "ENOENT");
@@ -484,6 +496,7 @@ static void handle(int fd) {
         } else if (path == "/api/job") respond_json(fd, 200, job_json());
         else if (path == "/api/pkg") respond_json(fd, 200, install_json());
         else if (path == "/api/zip") do_zip(fd, query);
+        else if (path == "/api/smb/scan") respond_json(fd, 200, smb_scan_json());
         else if (path == "/api/smb") respond_json(fd, 200, "{\"conns\":" + smb_conns_json() + "}");
         else if (path == "/api/state") respond_json(fd, 200, state_read());
         else if (path == "/api/log") {
