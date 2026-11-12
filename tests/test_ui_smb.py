@@ -86,6 +86,7 @@ try:
         check('F5 с шары в локальную панель', open(ROOT + '/file.txt').read() == 'x')
         # Enter по папке в шаре, Backspace наверх
         pg.wait_for_function('()=>!overlay.classList.contains("on")', timeout=15000)
+        pg.wait_for_timeout(800)  # дать завершиться обновлению панелей после задания
         pg.evaluate('()=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n==="folder");render(p)}')
         pg.keyboard.press('Enter')
         pg.wait_for_function('()=>panels[0].path==="/smb/nas/folder"')
