@@ -227,7 +227,7 @@ try:
         pg.evaluate('()=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n==="game.pkg");render(p)}')
         pg.keyboard.press('Enter')
         pg.wait_for_selector('.dlg')
-        check('Enter на .pkg: сначала предупреждение о поиске связанных пакетов', 'game.pkg' in pg.locator('.dlg').inner_text() and pg.locator('.viewer').count() == 0 and pg.locator('.dlg button').count() == 2, pg.locator('.dlg').inner_text())
+        check('Enter на .pkg: сначала предупреждение о поиске связанных пакетов', ('DLC' in pg.locator('.dlg').inner_text()) and pg.locator('.viewer').count() == 0 and pg.locator('.dlg button').count() == 2, pg.locator('.dlg').inner_text())
         pg.keyboard.press('Enter')
         pg.wait_for_function('()=>/install|Установить/i.test((document.querySelector(".dlg button.primary")||{}).textContent||"")&&!/OK/.test(document.querySelector(".dlg button.primary").textContent)', timeout=10000)
         check('нечитаемый pkg: затем обычное подтверждение установки', 'game.pkg' in pg.locator('.dlg').inner_text(), pg.locator('.dlg').inner_text())
