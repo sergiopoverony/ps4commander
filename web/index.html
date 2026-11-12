@@ -139,7 +139,7 @@ const TR = {
     binaryNoEdit:'This looks like a binary file; editing is disabled.', saved:'Saved', unsavedQ:'Close without saving?', save:'Save', newFileName:'New file name:', exists:'Already exists',
     typeDir:'Folder', typeFile:'File', typeLink:'Symbolic link', typeOther:'Other', fPath:'Path', fType:'Type', fSize:'Size', fMode:'Permissions', fOwner:'Owner', fTime:'Modified', fTarget:'Link target',
     objects:'objects', total:'Total', info:'Info',
-    pkgTotal:'Total', pkgWarnText:'The folder of this package and its subfolders will now be searched for patches and DLC of the same game. Searching over the network can take a while.',
+    pkgTotal:'Total', pkgWarnText:'The folder of this package and its subfolders will now be searched for patches and DLC of the same game.', pkgWarnNet:'Searching over the network can take a while.',
     pkgFinding:'Looking for related packages', pkgFindingText:'Searching this folder and its subfolders for patches, DLC and other files of the same game...', pkgRelTitle:'Install with related packages', pkgRelHead:'Found for {tid} {title}. Tick what to install (the order is fixed: game, patches, DLC, localizations).', kGame:'game', kPatch:'patch', kDlc:'DLC', kRus:'localization', pkgTrunc:'The search was cut short (too many files), some packages may be missing.', pkgSel:'Install selected ({n})', why_backport_fw:'backport: not for this firmware', why_newer_patch:'a newer patch exists ({v})', why_incomplete:'not fully downloaded', pkgNoSel:'Nothing is selected',
     install:'Install PKG', installQ:'Install {n} via the system installer?', pkgTitle:'Package installation', pkgNone:'No .pkg files selected',
     stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
@@ -183,7 +183,7 @@ const TR = {
     binaryNoEdit:'Похоже на двоичный файл; правка отключена.', saved:'Сохранено', unsavedQ:'Закрыть без сохранения?', save:'Сохранить', newFileName:'Имя нового файла:', exists:'Уже существует',
     typeDir:'Папка', typeFile:'Файл', typeLink:'Символическая ссылка', typeOther:'Другое', fPath:'Путь', fType:'Тип', fSize:'Размер', fMode:'Права', fOwner:'Владелец', fTime:'Изменён', fTarget:'Цель ссылки',
     objects:'объектов', total:'Всего', info:'Свойства',
-    pkgTotal:'Всего', pkgWarnText:'Сейчас в папке этого пакета и в её подпапках будут искаться патчи, DLC этой же игры. Поиск по сети может занять некоторое время.',
+    pkgTotal:'Всего', pkgWarnText:'Сейчас в папке этого пакета и в её подпапках будут искаться патчи, DLC этой же игры.', pkgWarnNet:'Поиск по сети может занять некоторое время.',
     pkgFinding:'Поиск связанных пакетов', pkgFindingText:'Ищу в этой папке и подпапках патчи, DLC и другие файлы этой же игры...', pkgRelTitle:'Установка со связанными пакетами', pkgRelHead:'Найдено для {tid} {title}. Отметьте, что ставить (порядок фиксированный: игра, патчи, DLC, русификаторы).', kGame:'игра', kPatch:'патч', kDlc:'DLC', kRus:'русификатор', pkgTrunc:'Поиск остановлен (слишком много файлов), часть пакетов могла не найтись.', pkgSel:'Установить выбранные ({n})', why_backport_fw:'backport: не для этой прошивки', why_newer_patch:'есть более новый патч ({v})', why_incomplete:'не докачан', pkgNoSel:'Ничего не выбрано',
     install:'Установить PKG', installQ:'Установить {n} штатным установщиком?', pkgTitle:'Установка пакетов', pkgNone:'Нет выбранных .pkg файлов',
     stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
@@ -801,7 +801,7 @@ function doInstall(only) {
     askRelated();
   }).catch(() => askRelated());
   // предупреждение (окно поиска ниже мелькает слишком быстро, чтобы его прочитать)
-  function askRelated() { confirmBox(t('pkgFinding'), t('pkgWarnText', { n: ts[0].n }), t('ok'), findRelated); }
+  function askRelated() { confirmBox(t('pkgFinding'), t('pkgWarnText') + (p.path.startsWith('/smb/') ? ' ' + t('pkgWarnNet') : ''), t('ok'), findRelated); }
   function findRelated() {
   // один пакет: ищем рядом патчи, DLC и прочее той же игры
   let stop = false;
