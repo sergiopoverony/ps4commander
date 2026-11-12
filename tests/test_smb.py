@@ -192,21 +192,11 @@ try:
         if not j['active']: break
         time.sleep(0.2)
     log = open(BASE + '/out.txt').read()
-    check('smb: способ 1 - системе отдан сетевой адрес /p/<id>', 'http://' in log and '/p/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS' in log and 'stage/' not in log, log[-600:])
-    check('smb: установка с шары завершилась', [i['st'] for i in j['items']] == ['done'], j)
-    open(SHARE + '/sub/deep/nourl.pkg', 'wb').write(b'\x7fCNT' + b'\0' * 60 + b'UP0000-CUSA00000_00-NOURLNOURLNOURLNOURL'[:36] + b'\0' * 100)
-    # система отклонила адрес (0x8099006A): запасной способ - временная копия, которая потом удаляется
-    st, j = post('/api/pkg/install', {'paths': ['/smb/nas/sub/deep/nourl.pkg']})
-    check('smb: nourl.pkg поставлен в очередь', st == 200, (st, j))
-    t0 = time.time()
-    while time.time() - t0 < 20:
-        st, j = get('/api/pkg')
-        if not j['active']: break
-        time.sleep(0.2)
     log = open(BASE + '/out.txt').read()
-    cid2 = 'UP0000-CUSA00000_00-NOURLNOURLNOURLN'
-    check('smb: после отказа адреса ставится через копию', [i['st'] for i in j['items']][-1] == 'done' and ('stage/' + cid2 + '.pkg') in log and 'способ 3' in log, (j, log[-800:]))
+    cid2 = 'UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS'
+    check('smb: без FUSE ставится через временную копию', [i['st'] for i in j['items']] == ['done'] and ('stage/' + cid2 + '.pkg') in log and 'способ 2' in log and 'источник http://' not in log, (j, log[-300:]))
     check('smb: временная копия удалена', not os.path.exists('/tmp/ps4commander_test_data/stage/' + cid2 + '.pkg'))
+    check('smb: /p/ больше нет', get('/p/' + cid2)[0] == 404)
     # операции FUSE-папки (то, что видит системный установщик)
     st, j = get('/api/_nf?op=ls&path=/')
     check('fuse: корень - список шар', st == 200 and j['r'] == 0 and 'nas' in j['n'], j)

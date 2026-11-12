@@ -13,6 +13,7 @@
 #include <mutex>
 
 #include "log.h"
+#include "platform.h"
 #include "smb.h"
 
 namespace {
@@ -384,7 +385,7 @@ bool mounted_at(const std::string& path) {
     if (n <= 0) return false;
     std::vector<struct statfs> list((size_t)n + 8);
     n = getfsstat(list.data(), (long)(list.size() * sizeof(struct statfs)), MNT_NOWAIT);
-    for (int i = 0; i < n; i++) if (path == list[(size_t)i].f_mntonname) return true;
+    for (int i = 0; i < n; i++) if (path == list[(size_t)i].f_mntonname || "/user" + path == list[(size_t)i].f_mntonname) return true;
     return false;
 }
 
@@ -407,13 +408,14 @@ bool netfs_root(std::string& root, std::string& err) {
     std::lock_guard<std::mutex> l(g_mtx);
     if (g_mounted) { root = g_root; return true; }
     if (!g_fail.empty()) { err = g_fail; return false; }   // ядро второй раз не трогаем
-    // Системный установщик читает pkg только с диска, который он сам смонтировал, поэтому точка монтирования лежит на флешке.
+    // Системный установщик, по данным PS4Mount, читает pkg только с диска, который сам смонтировал, поэтому точка
+    // монтирования лежит на флешке. Без флешки пробуем /data/ps4commander/mnt (работает ли так - проверяется на консоли).
     std::string parent;
     for (int i = 0; i < 8 && parent.empty(); i++) {
         std::string m = "/mnt/usb" + std::to_string(i);
         if (is_mount(m)) parent = m + "/ps4commander_nas";
     }
-    if (parent.empty()) { err = "no_usb"; return false; }
+    if (parent.empty()) { parent = std::string(DATA_DIR) + "/mnt"; app_log("netfs: флешки нет, точка монтирования %s", parent.c_str()); }
     g_kp = kp_for(kernel_get_fw_version());
     if (!g_kp && access("/dev/fuse0", F_OK)) { err = g_fail = "no_fw"; app_log("netfs: для этой прошивки нет патча fusefs"); return false; }
     if (access("/dev/fuse0", F_OK)) {
@@ -429,6 +431,7 @@ bool netfs_root(std::string& root, std::string& err) {
         app_log("netfs: устройства fuse недоступны (%s)", err.c_str());
         return false;
     }
+    mkdir(std::string(DATA_DIR).c_str(), 0777);
     mkdir(parent.c_str(), 0777);
     std::string mnt;
     for (int i = 1; i <= 8 && mnt.empty(); i++) {

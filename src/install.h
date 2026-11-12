@@ -9,5 +9,3 @@ std::string install_json();
 void install_cancel();
 void install_shutdown();
 
-// Путь к pkg из очереди по его Content ID (для отдачи системному установщику файлов с сетевых папок).
-bool install_path_for_token(const std::string& token, std::string& path);
