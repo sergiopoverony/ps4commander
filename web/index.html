@@ -373,7 +373,20 @@ function updateFoot(p) {
   p.head.title = p.path;
   p.el.classList.toggle('danger1', p.danger === 1);
 }
-async function load(p, path, keepName) {
+// Путь на подключаемом диске (USB или расширенное хранилище)
+function isDiskPath(path) { return /^\/mnt\/(usb|ext)\d+(\/|$)/.test(path); }
+let stateReady = false, stateTimer = 0;
+function saveState() {
+  if (!stateReady) return;
+  clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => {
+    const body = { l: panels[0].path };
+    // правую запоминаем, только пока она на диске: иначе при следующем запуске подставится подключённый USB
+    if (isDiskPath(panels[1].path)) body.r = panels[1].path;
+    api('/api/state', body).catch(() => {});
+  }, 400);
+}
+async function load(p, path, keepName, quiet) {
   try {
     const j = await api('/api/ls?path=' + encodeURIComponent(path));
     p.path = j.path; p.entries = j.entries; p.free = j.free; p.total = j.total; p.danger = j.danger; p.trunc = j.trunc;
@@ -385,9 +398,10 @@ async function load(p, path, keepName) {
     ensureVisible(p);
     render(p);
     updateFoot(p);
+    saveState();
     return true;
   } catch (e) {
-    if (e.code !== 'noconn') say(t('openedErr') + ' ' + path + ': ' + errText(e.code), true);
+    if (e.code !== 'noconn' && !quiet) say(t('openedErr') + ' ' + path + ': ' + errText(e.code), true);
     return false;
   }
 }
@@ -954,15 +968,23 @@ async function init() {
   rebuildUI();
   setupDrop();
   setActive(0);
-  let roots = ['/'];
+  let roots = ['/'], rootInfo = [], st = {};
   try {
     const j = await api('/api/roots');
+    rootInfo = j.roots;
     roots = j.roots.map(r => r.p);
     if (j.version) $('#ver').textContent = j.version;
   } catch (e) { say(t('noConn'), true); }
-  const first = roots.includes('/data') ? '/data' : roots[0];
-  await load(panels[0], first, null);
-  await load(panels[1], roots.includes('/') ? '/' : roots[0], null);
+  try { st = await api('/api/state'); } catch (e) {}
+  // левая: сохранённая, иначе /data; правая: сохранённая (если диск подключён), иначе первый подключённый USB/HDD
+  const usb = rootInfo.filter(r => isDiskPath(r.p));
+  const usbDef = (usb.find(r => r.mnt) || usb[0] || {}).p;
+  const leftDef = roots.includes('/data') ? '/data' : roots[0];
+  const rightDef = usbDef || (roots.includes('/') ? '/' : roots[0]);
+  if (!(st.l && await load(panels[0], st.l, null, true))) await load(panels[0], leftDef, null);
+  const diskUp = p => !isDiskPath(p) || usb.some(r => p === r.p || p.startsWith(r.p + '/'));
+  if (!(st.r && isDiskPath(st.r) && diskUp(st.r) && await load(panels[1], st.r, null, true))) await load(panels[1], rightDef, null);
+  stateReady = true;
   panels[0].list.focus();
 }
 init();

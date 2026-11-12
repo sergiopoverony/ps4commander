@@ -128,7 +128,7 @@ std::string fs_check_modify(const std::string& n, bool unsafe, bool as_container
 
 std::string fs_roots_json() {
 #ifdef HOST_TEST
-    return "[{\"p\":\"" + json_esc(host_root()) + "\"}]";
+    return "[{\"p\":\"" + json_esc(host_root()) + "\",\"mnt\":false}]";
 #else
     static const char* cand[] = {"/", "/data", "/user", "/user/home", "/mnt/usb0", "/mnt/usb1", "/mnt/usb2", "/mnt/usb3",
                                  "/mnt/usb4", "/mnt/usb5", "/mnt/usb6", "/mnt/usb7", "/mnt/ext0", "/mnt/ext1",
@@ -140,7 +140,10 @@ std::string fs_roots_json() {
         if (stat(cand[k], &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         if (!first) o += ',';
         first = false;
-        o += "{\"p\":\"" + std::string(cand[k]) + "\"}";
+        // mnt: каталог - отдельная файловая система (диск реально подключён)
+        bool mnt = false;
+        if (!strncmp(cand[k], "/mnt/", 5)) { struct stat pst; mnt = stat("/mnt", &pst) == 0 && pst.st_dev != st.st_dev; }
+        o += "{\"p\":\"" + std::string(cand[k]) + "\",\"mnt\":" + (mnt ? "true" : "false") + "}";
     }
     return o + "]";
 #endif

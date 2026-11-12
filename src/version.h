@@ -1,4 +1,4 @@
 #pragma once
 // Единственный источник версии. На каждую пересборку увеличивается последняя цифра.
-#define APP_VERSION "0.1.0.4"
+#define APP_VERSION "0.1.0.5"
 #define APP_PORT 8484

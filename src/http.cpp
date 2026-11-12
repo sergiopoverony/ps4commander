@@ -175,6 +175,30 @@ static void do_download(int fd, const std::string& n, bool inl) {
 }
 
 // Папка (или несколько имён из одного каталога) одним ZIP-архивом, собираемым на лету.
+// Положение панелей хранится на консоли, чтобы было одинаковым с любого устройства.
+static std::string state_path() { return std::string(DATA_DIR) + "/state.json"; }
+static std::string state_read() {
+    FILE* f = fopen(state_path().c_str(), "rb");
+    if (!f) return "{}";
+    char b[4096];
+    size_t n = fread(b, 1, sizeof(b) - 1, f);
+    fclose(f);
+    std::string s(b, n);
+    JsonObj j = json_parse(s);
+    if (!j.ok) return "{}";
+    return "{\"l\":\"" + json_esc(j.get_str("l")) + "\",\"r\":\"" + json_esc(j.get_str("r")) + "\"}";
+}
+static bool state_write(const std::string& l, const std::string& r) {
+    std::string tmp = state_path() + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return false;
+    std::string o = "{\"l\":\"" + json_esc(l) + "\",\"r\":\"" + json_esc(r) + "\"}";
+    bool ok = fwrite(o.data(), 1, o.size(), f) == o.size();
+    ok = fclose(f) == 0 && ok;
+    if (!ok) { unlink(tmp.c_str()); return false; }
+    return rename(tmp.c_str(), state_path().c_str()) == 0;
+}
+
 static void do_zip(int fd, const std::string& query) {
     std::string err;
     std::string dir = fs_normalize(qget(query, "dir"));
@@ -306,6 +330,13 @@ static void handle_post(int fd, const std::string& path, const std::string& body
         for (auto& x : ps) if (x.empty()) { respond_err(fd, 400, "bad_path"); return; }
         if (install_start(ps, err)) { app_log("установка pkg: %d шт.", (int)ps.size()); respond_json(fd, 200, "{\"ok\":true}"); }
         else respond_err(fd, err_status(err), err);
+    } else if (path == "/api/state") {
+        // l - левая панель, r - правая; отсутствующее поле оставляет прежнее значение
+        JsonObj old = json_parse(state_read());
+        std::string l = old.get_str("l"), r = old.get_str("r");
+        if (j.str.count("l")) { l = fs_normalize(j.get_str("l")); }
+        if (j.str.count("r")) { r = fs_normalize(j.get_str("r")); }
+        if (state_write(l, r)) respond_json(fd, 200, "{\"ok\":true}"); else respond_err(fd, 400, "write_failed");
     } else if (path == "/api/pkg/cancel") {
         install_cancel();
         respond_json(fd, 200, "{\"ok\":true}");
@@ -381,6 +412,7 @@ static void handle(int fd) {
         } else if (path == "/api/job") respond_json(fd, 200, job_json());
         else if (path == "/api/pkg") respond_json(fd, 200, install_json());
         else if (path == "/api/zip") do_zip(fd, query);
+        else if (path == "/api/state") respond_json(fd, 200, state_read());
         else if (path == "/api/log") {
             size_t n = 8192;
             std::string t = log_tail(n);

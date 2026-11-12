@@ -19,6 +19,7 @@ def check(name, cond, extra=''):
 
 
 shutil.rmtree(BASE, ignore_errors=True)
+shutil.rmtree('/tmp/ps4commander_test_data', ignore_errors=True)
 os.makedirs(ROOT + '/docs/inner')
 os.makedirs(ROOT + '/other')
 for i in range(300):
@@ -242,6 +243,35 @@ try:
         check('Ctrl+D на папке: скачан ZIP', d.suggested_filename == 'inner.zip', d.suggested_filename)
         import zipfile
         check('ZIP читается', zipfile.ZipFile(d.path()).testzip() is None)
+
+        # запоминание левой панели между запусками
+        pg.evaluate('()=>load(panels[0], "%s/docs", null)' % ROOT)
+        pg.wait_for_function('()=>panels[0].path.endsWith("/docs")')
+        pg.wait_for_timeout(900)
+        pg.reload()
+        pg.wait_for_selector('.row')
+        pg.wait_for_function('()=>stateReady')
+        check('левая панель восстановлена после перезапуска', pg.evaluate('()=>panels[0].path') == ROOT + '/docs', pg.evaluate('()=>panels[0].path'))
+
+        check('isDiskPath: USB/EXT распознаются, остальное нет', pg.evaluate("()=>['/mnt/usb0','/mnt/usb1/games','/mnt/ext0/x'].every(isDiskPath)&&['/data','/mnt/usbx','/mnt/usb0evil','/mnt'].every(p=>!isDiskPath(p))"))
+
+        # стартовые панели на «настоящей» консоли: слева /data, справа подключённый USB (ответы сервера подменены)
+        import json as _json
+        def fake_roots(route):
+            route.fulfill(content_type='application/json', body=_json.dumps({'version': 'x', 'roots': [{'p': '/', 'mnt': False}, {'p': '/data', 'mnt': False}, {'p': '/mnt/usb0', 'mnt': False}, {'p': '/mnt/usb1', 'mnt': True}]}))
+        def fake_ls(route):
+            from urllib.parse import urlparse, parse_qs
+            pth = parse_qs(urlparse(route.request.url).query)['path'][0]
+            route.fulfill(content_type='application/json', body=_json.dumps({'path': pth, 'entries': [], 'free': 0, 'total': 0, 'danger': 0}))
+        def fake_state(route):
+            route.fulfill(content_type='application/json', body='{}')
+        pg.route('**/api/roots', fake_roots); pg.route('**/api/ls*', fake_ls); pg.route('**/api/state', fake_state)
+        pg.reload()
+        pg.wait_for_function('()=>stateReady')
+        check('старт: слева /data, справа подключённый USB', pg.evaluate('()=>[panels[0].path,panels[1].path]') == ['/data', '/mnt/usb1'], pg.evaluate('()=>[panels[0].path,panels[1].path]'))
+        pg.unroute('**/api/roots'); pg.unroute('**/api/ls*'); pg.unroute('**/api/state')
+        pg.reload()
+        pg.wait_for_function('()=>stateReady')
 
         # язык и тема
         pg.keyboard.press('F10')

@@ -56,6 +56,7 @@ def wait_job(limit=60):
 
 def start():
     shutil.rmtree(BASE, ignore_errors=True)
+    shutil.rmtree('/tmp/ps4commander_test_data', ignore_errors=True)
     os.makedirs(ROOT + '/src/sub')
     os.makedirs(ROOT + '/dst')
     open(ROOT + '/src/a.txt', 'w').write('hello\n')
@@ -243,6 +244,22 @@ try:
     shutil.rmtree(ROOT + '/cp'); os.unlink(big)
 
     # ----- завершение
+    # запоминание панелей
+    st, j = get('/api/state')
+    check('state: изначально пусто', st == 200 and j.get('l', '') == '' and j.get('r', '') == '', j)
+    st, j = post('/api/state', {'l': ROOT + '/src', 'r': ROOT + '/dst'})
+    check('state: сохранено', st == 200)
+    st, j = post('/api/state', {'l': ROOT + '/src/sub'})
+    st, j = get('/api/state')
+    check('state: поле r сохраняется при записи только l', j == {'l': ROOT + '/src/sub', 'r': ROOT + '/dst'}, j)
+    st, j = post('/api/state', {'l': ROOT + '/a/../src'})
+    st, j = get('/api/state')
+    check('state: путь нормализуется', j['l'] == ROOT + '/src', j)
+    st, _, _ = raw('/api/state', b'{}', {}, 'POST')
+    check('state: POST без заголовка запрещён', st in (400, 403), st)
+    st, j = get('/api/roots')
+    check('roots: есть флаг mnt', all('mnt' in r for r in j['roots']), j)
+
     # скачивание папки одним ZIP
     import zipfile, io
     Z = ROOT + '/zsrc'
