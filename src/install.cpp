@@ -214,6 +214,18 @@ bool bgft_load() {
     g_prog = (prog_fn)find_sym(h, "sceBgftServiceDownloadGetProgress", "sceBgftDownloadGetProgress");
     g_bstop = (start_fn)find_sym(h, "sceBgftServiceDownloadStopTask", "sceBgftDownloadStopTask");
     g_bunreg = (start_fn)find_sym(h, "sceBgftServiceDownloadUnregisterTask", "sceBgftDownloadUnregisterTask");
+    if (!g_bunreg) g_bunreg = (start_fn)find_sym(h, "sceBgftServiceIntDownloadUnregisterTask", "sceBgftServiceIntUnregisterTask");
+    {   // какие ещё функции управления задачами есть в этой прошивке (для разбора, в работе не используются)
+        static const char* names[] = {"sceBgftServiceDownloadPauseTask", "sceBgftServiceDownloadResumeTask", "sceBgftServiceIntDownloadStopTask",
+            "sceBgftServiceIntDownloadUnregisterTask", "sceBgftServiceDownloadUnregisterTask", "sceBgftServiceIntDownloadFindTaskByContentId",
+            "sceBgftServiceDownloadFindTaskByContentId", "sceBgftServiceDownloadFindTaskByContent", "sceBgftServiceIntDownloadFindActivePatchTask",
+            "sceBgftServiceIntDownloadFindActivePlayGoTask", "sceBgftServiceIntDownloadReregisterTaskPatch", "sceBgftServiceIntDownloadRegisterTask",
+            "sceBgftServiceIntDownloadRegisterTaskByStorage", "sceBgftServiceIntDownloadUnregisterTaskAll", "sceBgftServiceIntDebugDownloadUnregisterTask",
+            "sceBgftServiceDownloadGetTaskInfo", "sceBgftServiceIntDownloadGetProgress", "sceBgftServiceIntDownloadStartTask"};
+        std::string have;
+        for (const char* n : names) { void* q = nullptr; if (sceKernelDlsym(h, n, &q) == 0 && q) { have += " "; have += n + 10; } }
+        app_log("BGFT: найденные функции:%s", have.empty() ? " нет" : have.c_str());
+    }
     app_log("BGFT: init=%d reg=%d start=%d progress=%d stop=%d unregister=%d", !!g_init, !!g_reg, !!g_start, !!g_prog, !!g_bstop, !!g_bunreg);
     if (!g_init || !g_reg || !g_start || !g_prog) return false;
     // метка на случай падения init: следующий запуск этой версии пропустит init
