@@ -9,9 +9,12 @@
 #include "log.h"
 #include "platform.h"
 #include "version.h"
+#include <csignal>
 #include <cstdlib>
 
 int main() {
+    // Клиент оборвал загрузку/скачивание -> запись в закрытый сокет не должна убивать службу (SIGPIPE).
+    signal(SIGPIPE, SIG_IGN);
     log_open(DATA_DIR);   // первым делом: по этому файлу видно, что программа дошла до main()
     app_log("version %s", APP_VERSION);
     int port = APP_PORT;

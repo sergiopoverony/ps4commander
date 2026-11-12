@@ -243,6 +243,26 @@ try:
     shutil.rmtree(ROOT + '/cp'); os.unlink(big)
 
     # ----- завершение
+    # обрыв соединения клиентом посреди скачивания/загрузки не должен ронять службу (SIGPIPE)
+    import socket, struct
+    open(ROOT + '/big.bin', 'wb').write(os.urandom(8 << 20))
+    def abort_download():
+        c = socket.create_connection(('127.0.0.1', PORT))
+        c.sendall(('GET /api/download?path=%s HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n' % urllib.parse.quote(ROOT + '/big.bin')).encode())
+        c.recv(65536)
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        c.close()
+    def abort_upload():
+        c = socket.create_connection(('127.0.0.1', PORT))
+        c.sendall(('POST /api/upload?path=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Requested-With: ps4cmd\r\nContent-Length: 5000000\r\n\r\n' % urllib.parse.quote(ROOT + '/aborted.bin')).encode() + b'x' * 100000)
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        c.close()
+    for _ in range(6):
+        abort_download(); abort_upload()
+    time.sleep(1)
+    check('обрыв скачивания/загрузки: служба жива', p.poll() is None and get('/api/roots')[0] == 200)
+    check('обрыв загрузки: неполный файл не остался', not os.path.exists(ROOT + '/aborted.bin'), os.listdir(ROOT))
+
     # установка pkg (заглушка BGFT)
     def mkpkg(name, cid='UP0000-CUSA00000_00-TESTTESTTESTTEST', magic=b'\x7fCNT'):
         h = bytearray(0x200)

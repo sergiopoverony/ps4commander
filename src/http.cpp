@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <csignal>
 #include <poll.h>
 #include <string>
 #include <sys/socket.h>
@@ -37,7 +38,11 @@ static std::string quit_flag_path() { return std::string(DATA_DIR) + "/quit.flag
 static bool send_all(int fd, const char* p, size_t n) {
     size_t off = 0;
     while (off < n) {
+        #ifdef MSG_NOSIGNAL
+        ssize_t r = send(fd, p + off, n - off, MSG_NOSIGNAL);
+#else
         ssize_t r = send(fd, p + off, n - off, 0);
+#endif
         if (r < 0 && errno == EINTR) continue;
         if (r <= 0) return false;
         off += (size_t)r;
@@ -464,6 +469,9 @@ int http_run(int port) {
         timeval rt = {10, 0}, wt = {30, 0};
         setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &rt, sizeof(rt));
         setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &wt, sizeof(wt));
+#ifdef SO_NOSIGPIPE
+        { int one = 1; setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)); }
+#endif
         if (g_clients.load() >= kMaxClients) { close(c); continue; }
         ++g_clients;
         try {
