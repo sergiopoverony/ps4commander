@@ -223,15 +223,17 @@ try:
         os.makedirs(os.path.dirname(SHARE + rel), exist_ok=True)
         open(SHARE + rel, 'wb').write(bytes(buf))
     C = 'UP0000-CUSA77777_00-TESTGAMETESTGAME'
-    mkpkg('/lib/game/main/Game.pkg', C, 0x1A, 0, 'Test Game', '01.00', extra=b'\1' * 5000)
+    mkpkg('/lib/game/Game.pkg', C, 0x1A, 0, 'Test Game', '01.00', extra=b'\1' * 5000)
     mkpkg('/lib/game/patch/Patch_101.pkg', C, 0x1A, 0x40000000, 'Test Game', '01.01', extra=b'\2' * 3000)
     mkpkg('/lib/game/patch/Patch_102.pkg', C, 0x1A, 0x40000000, 'Test Game', '01.02', extra=b'\3' * 3100)
     mkpkg('/lib/game/patch/Patch_103_broken.pkg', C, 0x1A, 0x40000000, 'Test Game', '01.03', pkg_size=10 ** 6, extra=b'\4' * 100)
     mkpkg('/lib/game/dlc/Pack.pkg', 'UP0000-CUSA77777_00-TESTDLCTESTDLC00', 0x1B, 0, 'Test DLC', '01.00', extra=b'\5' * 2000)
     mkpkg('/lib/game/rus/Russian.pkg', 'UP0000-CUSA77777_00-TESTRUSTESTRUS00', 0x1A, 0, 'Test Game RUS', '01.00', extra=b'\6' * 1500)
+    mkpkg('/lib/Outside.pkg', 'UP0000-CUSA77777_00-OUTSIDEOUTSIDEOUT0', 0x1B, 0, 'Outside DLC', '01.00', extra=b'\\1' * 700)
+    mkpkg('/lib/game/deep/er/Deeper.pkg', 'UP0000-CUSA77777_00-DEEPERDEEPERDEEP0', 0x1B, 0, 'Deeper DLC', '01.00', extra=b'\\1' * 700)
     mkpkg('/lib/game/other/Other.pkg', 'UP0000-CUSA88888_00-OTHERGAMEOTHERG0', 0x1A, 0, 'Other Game', '01.00', extra=b'\7' * 800)
     open(SHARE + '/lib/game/other/readme.txt', 'w').write('x')
-    st, j = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/main/Game.pkg'))
+    st, j = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/Game.pkg'))
     names = [i['n'] for i in j.get('items', [])] if st == 200 else []
     check('pkg: найдены связанные, порядок игра-патч-DLC-русификатор', names[:4] == ['Game.pkg', 'Patch_102.pkg', 'Pack.pkg', 'Russian.pkg'], (st, names))
     byname = {i['n']: i for i in j.get('items', [])}
@@ -239,6 +241,7 @@ try:
     check('pkg: старый патч пропущен с причиной', byname['Patch_101.pkg']['c'] is False and byname['Patch_101.pkg']['why'] == 'newer_patch:1.02', byname.get('Patch_101.pkg'))
     check('pkg: недокачанный пропущен', byname['Patch_103_broken.pkg']['c'] is False and byname['Patch_103_broken.pkg']['why'] == 'incomplete', byname.get('Patch_103_broken.pkg'))
     check('pkg: чужая игра не попала в список', 'Other.pkg' not in byname, names)
+    check('pkg: выше папки пакета и глубже одного уровня не ищем', 'Outside.pkg' not in byname and 'Deeper.pkg' not in byname, names)
     check('pkg: тип и версия из заголовка', byname['Game.pkg']['k'] == 'game' and byname['Patch_102.pkg']['k'] == 'patch' and byname['Patch_102.pkg']['v'] == '01.02' and byname['Pack.pkg']['k'] == 'dlc' and j['title'] == 'Test Game' and j['tid'] == 'CUSA77777', j)
     st, j2 = get('/api/pkg/related?path=' + urllib.parse.quote('/smb/nas/lib/game/patch/Patch_101.pkg'))
     b2 = {i['n']: i for i in j2.get('items', [])}

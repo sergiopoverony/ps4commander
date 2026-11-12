@@ -28,5 +28,5 @@ void pi_name_tags(PkgInfo* p);
 // самый новый; порядок внутри игры: игра, патчи (по возрастанию версии), DLC, русификаторы.
 std::vector<PkgInfo> pi_plan(const std::vector<PkgInfo>& in, int fw_major, std::vector<PkgSkip>* skipped);
 int pi_fw_major();
-// Ищет рядом с пакетом (его папка и соседние папки) пакеты той же игры. JSON для окна выбора; пусто и err при ошибке.
+// Ищет рядом с пакетом (его папка и подпапки на один уровень) пакеты той же игры. JSON для окна выбора; пусто и err при ошибке.
 std::string pi_related_json(const std::string& norm_path, std::string& err);

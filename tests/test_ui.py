@@ -256,11 +256,11 @@ try:
             b[0xA00:0xA00 + len(sfo)] = sfo
             os.makedirs(os.path.dirname(ROOT + rel), exist_ok=True)
             open(ROOT + rel, 'wb').write(bytes(b))
-        mkpkg('/lib/main/Game.pkg', 'UP0000-CUSA55555_00-UITESTUITESTUITE', 0x1A, 0, 'UI Game', '01.00')
+        mkpkg('/lib/Game.pkg', 'UP0000-CUSA55555_00-UITESTUITESTUITE', 0x1A, 0, 'UI Game', '01.00')
         mkpkg('/lib/upd/Patch.pkg', 'UP0000-CUSA55555_00-UITESTUITESTUITE', 0x1A, 0x40000000, 'UI Game', '01.05')
         mkpkg('/lib/dlc/Extra.pkg', 'UP0000-CUSA55555_00-UIDLCUIDLCUIDLC0', 0x1B, 0, 'UI DLC', '01.00')
         saved_path = pg.evaluate('()=>panels[0].path')
-        pg.evaluate('(p)=>{panels[0].path=p;return refreshAll()}', ROOT + '/lib/main')
+        pg.evaluate('(p)=>{panels[0].path=p;return refreshAll()}', ROOT + '/lib')
         pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="Game.pkg")')
         pg.evaluate('()=>{const p=panels[0];p.cur=p.view.findIndex(e=>e.n==="Game.pkg");render(p)}')
         pg.keyboard.press('Enter')

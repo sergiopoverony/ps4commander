@@ -373,7 +373,7 @@ struct Scan {
     time_t deadline;
     std::set<std::string> seen_dirs;
 };
-const int kMaxHeaders = 400, kMaxDepth = 3, kMaxSecs = 25;
+const int kMaxHeaders = 400, kMaxDepth = 1, kMaxSecs = 25;   // папка пакета и её подпапки на один уровень вглубь, выше не поднимаемся
 
 void scan_dir(Scan& sc, const std::string& root, const std::string& skip) {
     std::deque<std::pair<std::string, int>> q;
@@ -437,13 +437,8 @@ std::string pi_related_json(const std::string& path, std::string& err) {
     Scan sc;
     sc.title_id = self.title_id;
     sc.deadline = time(nullptr) + kMaxSecs;
-    std::string dir = fs_parent(path), parent = fs_parent(dir);
+    std::string dir = fs_parent(path);
     scan_dir(sc, dir, "");
-    // Соседние папки: на уровень выше, но не выше корня диска или шары (там лежит всё подряд).
-    int comps = 0;
-    for (char c : parent) if (c == '/') comps++;
-    bool smb = smb_is_path(parent);
-    if (parent != dir && comps >= (smb ? 3 : 2)) scan_dir(sc, parent, dir);
 
     // себя ставим первым в список, дубликаты (тот же Content ID, тип и размер) отбрасываем
     std::vector<PkgInfo> all;
