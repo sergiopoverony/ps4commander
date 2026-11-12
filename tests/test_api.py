@@ -271,6 +271,16 @@ try:
     st, j = post('/api/state', {'l': ROOT + '/a/../src'})
     st, j = get('/api/state')
     check('state: путь нормализуется', j['l'] == ROOT + '/src', j)
+    # языковые файлы
+    st, idx = get('/lang/index.json')
+    check('lang: список языков (en первым)', st == 200 and [x['code'] for x in idx][:2] == ['en', 'ru'] and idx[1]['name'] == 'Русский', idx)
+    dicts = {}
+    for x in idx:
+        st, d = get('/lang/%s.json' % x['code'])
+        dicts[x['code']] = d
+        check('lang: %s отдаётся' % x['code'], st == 200 and isinstance(d, dict) and d.get('menu'))
+    check('lang: во всех языках одинаковый набор ключей', all(set(d) == set(dicts['en']) for d in dicts.values()))
+    check('lang: неизвестный язык и обход пути - 404', get('/lang/zz.json')[0] == 404 and get('/lang/..%2f..%2fstate.json')[0] == 404)
     st, j = post('/api/state', {'theme': 'light'})
     st, j = get('/api/state')
     check('state: тема сохраняется и пути не теряются', j.get('theme') == 'light' and j.get('l') == ROOT + '/src', j)

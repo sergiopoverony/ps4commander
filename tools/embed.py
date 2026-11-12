@@ -24,3 +24,24 @@ os.makedirs(os.path.dirname(out), exist_ok=True)
 with open(out, 'w') as f:
     f.write('// Сгенерировано tools/embed.py. Не редактировать.\n#pragma once\n')
     f.write(arr('ASSET_INDEX_HTML', html))
+
+# языковые файлы lang/<код>.json; en первым, остальные по алфавиту
+import glob, json
+langs = sorted(glob.glob(os.path.join(root, 'lang', '*.json')), key=lambda x: (os.path.basename(x) != 'en.json', x))
+index = []
+with open(out, 'a') as f:
+    for fn in langs:
+        code = os.path.basename(fn)[:-5]
+        assert re.fullmatch(r'[a-z]{2,8}(-[a-z0-9]{2,8})?', code), code
+        raw = open(fn, 'rb').read()
+        d = json.loads(raw.decode('utf-8'))
+        index.append({'code': code, 'name': d.get('_name', code)})
+        f.write(arr('ASSET_LANG_' + re.sub('[^A-Za-z0-9]', '_', code).upper(), raw))
+    f.write(arr('ASSET_LANG_INDEX', json.dumps(index, ensure_ascii=False).encode('utf-8')))
+    f.write('struct LangAsset { const char* code; const unsigned char* data; unsigned long len; };\n')
+    f.write('static const LangAsset kLangAssets[] = {\n')
+    for fn in langs:
+        code = os.path.basename(fn)[:-5]
+        n = 'ASSET_LANG_' + re.sub('[^A-Za-z0-9]', '_', code).upper()
+        f.write('  {"%s", %s, %s_LEN},\n' % (code, n, n))
+    f.write('  {nullptr, nullptr, 0}\n};\n')

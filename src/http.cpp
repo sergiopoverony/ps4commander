@@ -469,6 +469,15 @@ static void handle(int fd) {
         std::string err;
         if (path == "/" || path == "/index.html")
             respond(fd, 200, "text/html; charset=utf-8", (const char*)ASSET_INDEX_HTML, ASSET_INDEX_HTML_LEN);
+        else if (path == "/lang/index.json")
+            respond(fd, 200, "application/json; charset=utf-8", (const char*)ASSET_LANG_INDEX, ASSET_LANG_INDEX_LEN);
+        else if (path.compare(0, 6, "/lang/") == 0 && path.size() > 11 && path.compare(path.size() - 5, 5, ".json") == 0) {
+            std::string code = path.substr(6, path.size() - 11);
+            const LangAsset* la = nullptr;
+            for (const LangAsset* x = kLangAssets; x->code; ++x) if (code == x->code) { la = x; break; }
+            if (la) respond(fd, 200, "application/json; charset=utf-8", (const char*)la->data, la->len);
+            else respond_err(fd, 404, "not_found");
+        }
         else if (path == "/api/roots") respond_json(fd, 200, "{\"roots\":" + fs_roots_json() + ",\"version\":\"" APP_VERSION "\"}");
         else if (path == "/api/ls") {
             std::string n = path_param(query, err);
