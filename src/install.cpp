@@ -1,4 +1,6 @@
 #include "install.h"
+#include "http.h"
+#include "netfs.h"
 #include "fs.h"
 #include "vfs.h"
 #include "json.h"
@@ -29,6 +31,7 @@ struct Item {
     std::string path, name, cid;
     std::string status = "queued";  // queued | registering | installing | done | already_installed | failed | cancelled
     std::string msg;
+    std::string src;        // явный источник для системы: http-адрес или путь (пусто - сам файл)
     std::string stage;      // временная локальная копия pkg с сетевой папки
     uint64_t total = 0, done = 0;
 };
@@ -114,7 +117,8 @@ bool read_header(const std::string& path, std::string& cid, uint64_t& size, std:
 // Поэтому для длинных путей отдаём ей короткую символическую ссылку (как делает PS4Mount).
 const size_t kSysPathMax = 95;
 std::string source_url(const Item& it) {
-    std::string p = bgft_path(it.stage.empty() ? it.path : it.stage);
+    if (it.src.compare(0, 7, "http://") == 0) return it.src;
+    std::string p = bgft_path(!it.src.empty() ? it.src : it.stage.empty() ? it.path : it.stage);
     if (p.size() <= kSysPathMax) return p;
     std::string dir = std::string(DATA_DIR) + "/links";
     mkdir(dir.c_str(), 0777);
@@ -192,6 +196,7 @@ bool stage_in(Item* it);
 bool bgft_load() { g_bgft_info = "host-test stub"; return true; }
 int bgft_register(const Item& it, int* task) {
     app_log("BGFT: источник %s", source_url(it).c_str());
+    if (it.path.find("nourl") != std::string::npos && source_url(it).compare(0, 7, "http://") == 0) return (int)0x8099006A;
     if (it.path.find("busy") != std::string::npos) return (int)0x80990015;
     if (it.path.find("dup") != std::string::npos) return (int)0x80990088;
     if (it.path.find("fail") != std::string::npos) return (int)0x80990099;
@@ -341,14 +346,55 @@ bool stage_in(Item* it) {
     return true;
 }
 
-void run_item_inner(Item* it);
+// Способы отдать pkg с шары системному установщику (по порядку; отклонённый система способ больше не пробуем):
+//  1) http-адрес консоли в локальной сети, 2) папка FUSE на флешке (без копирования), 3) временная копия на диск.
+enum { M_URL = 1, M_FUSE = 2 };
+std::atomic<int> g_bad{0};
+const int kSourceRefused = 1;
+
+int run_item_inner(Item* it, bool final_try);
 void run_item(Item* it) {
-    if (smb_is_path(it->path) && !stage_in(it)) return;
-    run_item_inner(it);
+    if (!smb_is_path(it->path)) { run_item_inner(it, true); return; }
+    auto clear_src = [&] { std::lock_guard<std::mutex> l(g_mu); it->src.clear(); };
+    if (!(g_bad & M_URL)) {
+        std::string ip = local_ip();
+#ifdef HOST_TEST
+        if (ip.empty()) ip = "127.0.0.1";
+#endif
+        if (!ip.empty() && ip != "0.0.0.0") {
+            { std::lock_guard<std::mutex> l(g_mu); it->src = "http://" + ip + ":" + std::to_string(http_port()) + "/p/" + it->cid; }
+            app_log("установка %s: способ 1 - адрес в локальной сети", it->name.c_str());
+            int r = run_item_inner(it, false);
+            clear_src();
+            if (r != kSourceRefused) return;
+            g_bad |= M_URL;
+            app_log("установка %s: система не приняла сетевой адрес", it->name.c_str());
+        }
+    }
+    if (g_cancel || g_stop) { set(it, "cancelled"); return; }
+    if (!(g_bad & M_FUSE)) {
+        std::string root, e;
+        if (netfs_root(root, e)) {
+            { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
+            app_log("установка %s: способ 2 - папка FUSE %s", it->name.c_str(), it->src.c_str());
+            int r = run_item_inner(it, false);
+            clear_src();
+            if (r != kSourceRefused) return;
+            g_bad |= M_FUSE;
+            app_log("установка %s: система не приняла папку FUSE", it->name.c_str());
+        } else {
+            app_log("установка %s: FUSE недоступен (%s)", it->name.c_str(), e.c_str());
+            if (e != "no_usb" && e != "reload") g_bad |= M_FUSE;
+        }
+    }
+    if (g_cancel || g_stop) { set(it, "cancelled"); return; }
+    app_log("установка %s: способ 3 - временная копия на диск", it->name.c_str());
+    if (!stage_in(it)) return;
+    run_item_inner(it, true);
     stage_remove(it);
 }
 
-void run_item_inner(Item* it) {
+int run_item_inner(Item* it, bool final_try) {
     int task = 0, r = 0;
     set(it, "registering");
     for (int k = 0; k < 30; k++) {
@@ -356,11 +402,12 @@ void run_item_inner(Item* it) {
         if ((unsigned)r != 0x80990015u || g_cancel || g_stop) break;
         for (int s = 0; s < 3 && !g_cancel && !g_stop; s++) std::this_thread::sleep_for(std::chrono::milliseconds(HOST_SLEEP_MS));
     }
-    if (g_cancel || g_stop) { set(it, "cancelled"); return; }
-    if ((unsigned)r == 0x80990088u) { set(it, "already_installed"); return; }
-    if (r != 0) { set(it, "failed", "register " + hx(r)); app_log("установка %s: регистрация %s", it->name.c_str(), hx(r).c_str()); return; }
+    if (g_cancel || g_stop) { set(it, "cancelled"); return 0; }
+    if ((unsigned)r == 0x80990088u) { set(it, "already_installed"); return 0; }
+    if ((unsigned)r == 0x8099006Au && !final_try) { app_log("установка %s: регистрация %s (источник отклонён)", it->name.c_str(), hx(r).c_str()); return kSourceRefused; }
+    if (r != 0) { set(it, "failed", "register " + hx(r)); app_log("установка %s: регистрация %s", it->name.c_str(), hx(r).c_str()); return 0; }
     r = bgft_start(task);
-    if (r != 0) { set(it, "failed", "start " + hx(r)); return; }
+    if (r != 0) { set(it, "failed", "start " + hx(r)); return 0; }
     set(it, "installing");
     uint64_t last = 0;
     int stall = 0;
@@ -369,12 +416,13 @@ void run_item_inner(Item* it) {
         keep_awake_tick();
         uint64_t d = 0; int err = 0;
         int fin = bgft_progress(task, it->total, &d, &err);
-        if (err != 0) { set(it, "failed", hx(err)); app_log("установка %s: ошибка %s", it->name.c_str(), hx(err).c_str()); notify("ps4commander: ошибка установки %s %s", hx(err).c_str(), it->cid.c_str()); return; }
+        if (err != 0) { set(it, "failed", hx(err)); app_log("установка %s: ошибка %s", it->name.c_str(), hx(err).c_str()); notify("ps4commander: ошибка установки %s %s", hx(err).c_str(), it->cid.c_str()); return 0; }
         { std::lock_guard<std::mutex> l(g_mu); it->done = d; }
-        if (fin > 0) { set(it, "done"); return; }
-        if (d != last) { last = d; stall = 0; } else if (++stall >= STALL_TICKS) { set(it, "failed", "stalled"); return; }
+        if (fin > 0) { set(it, "done"); return 0; }
+        if (d != last) { last = d; stall = 0; } else if (++stall >= STALL_TICKS) { set(it, "failed", "stalled"); return 0; }
     }
     set(it, "cancelled");
+    return 0;
 }
 
 void worker() {
@@ -435,6 +483,13 @@ std::string install_json() {
              "\",\"total\":" + std::to_string(i.total) + ",\"done\":" + std::to_string(i.done) + "}";
     }
     return o + "]}";
+}
+
+bool install_path_for_token(const std::string& token, std::string& path) {
+    std::lock_guard<std::mutex> l(g_mu);
+    for (auto it = g_items.rbegin(); it != g_items.rend(); ++it)
+        if (it->cid == token && is_active(*it)) { path = it->path; return true; }
+    return false;
 }
 
 void install_cancel() {

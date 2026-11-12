@@ -2,6 +2,7 @@
 #include "assets_gen.h"
 #include "fs.h"
 #include "install.h"
+#include "netfs.h"
 #include "smb.h"
 #include "vfs.h"
 #include "jobs.h"
@@ -456,7 +457,7 @@ static void handle(int fd) {
     std::string range_hdr;
     { size_t rp = lower.find("\r\nrange:"); if (rp != std::string::npos) { size_t e2 = lower.find("\r\n", rp + 2); std::string v = lower.substr(rp + 8, e2 == std::string::npos ? std::string::npos : e2 - rp - 8); size_t b2 = v.find_first_not_of(" \t"); range_hdr = b2 == std::string::npos ? "" : v.substr(b2); while (!range_hdr.empty() && (range_hdr.back() == ' ' || range_hdr.back() == '\t')) range_hdr.pop_back(); } }
     bool is_head = method == "HEAD";
-    if (is_head && path != "/api/download") { respond_err(fd, 405, "method"); close(fd); return; }
+    if (is_head && path != "/api/download" && path.compare(0, 3, "/p/") != 0) { respond_err(fd, 405, "method"); close(fd); return; }
     if (method == "GET" || is_head) {
         std::string err;
         if (path == "/" || path == "/index.html")
@@ -483,6 +484,39 @@ static void handle(int fd) {
                     send_all(fd, data.data(), data.size());
                 } else respond_err(fd, err_status(err), err);
             }
+#ifdef HOST_TEST
+        } else if (path == "/api/_nf") {
+            // только для тестов: операции файловой системы FUSE без самого FUSE
+            std::string op = qget(query, "op"), p = qget(query, "path"), out;
+            if (op == "stat") {
+                struct stat st; int r = nf_getattr(p, &st);
+                out = "{\"r\":" + std::to_string(r) + ",\"dir\":" + (S_ISDIR(st.st_mode) ? "true" : "false") + ",\"size\":" + std::to_string((long long)st.st_size) + "}";
+            } else if (op == "ls") {
+                std::vector<std::string> n; int r = nf_readdir(p, n);
+                out = "{\"r\":" + std::to_string(r) + ",\"n\":[";
+                for (size_t i = 0; i < n.size(); i++) out += (i ? ",\"" : "\"") + n[i] + "\"";
+                out += "]}";
+            } else if (op == "read") {
+                NfHandle* h = nullptr; int r = nf_open(p, &h);
+                std::string data;
+                if (r == 0) {
+                    uint64_t off = strtoull(qget(query, "off").c_str(), nullptr, 10);
+                    size_t cnt = (size_t)strtoull(qget(query, "n").c_str(), nullptr, 10);
+                    data.resize(cnt);
+                    long k = nf_read(h, &data[0], cnt, off);
+                    if (k < 0) r = (int)k; else data.resize((size_t)k);
+                    nf_close(h);
+                }
+                if (r != 0) out = "{\"r\":" + std::to_string(r) + "}";
+                else { static const char* hx = "0123456789abcdef"; std::string hex; for (unsigned char c : data) { hex += hx[c >> 4]; hex += hx[c & 15]; } out = "{\"r\":0,\"hex\":\"" + hex + "\"}"; }
+            }
+            respond_json(fd, 200, out);
+#endif
+        } else if (path.compare(0, 3, "/p/") == 0) {
+            // адрес pkg из очереди установки: только пока он ждёт установки или ставится
+            std::string real;
+            if (!install_path_for_token(path.substr(3), real)) respond_err(fd, 404, "not_found");
+            else do_download(fd, real, false, range_hdr, is_head);
         } else if (path == "/api/download") {
             std::string n = path_param(query, err);
             if (n.empty()) respond_err(fd, 400, err); else do_download(fd, n, qget(query, "inline") == "1", range_hdr, is_head);

@@ -1,0 +1,23 @@
+#pragma once
+// Сетевые папки SMB, смонтированные через FUSE в обычную папку на флешке (для установки .pkg без копирования).
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+
+// Операции файловой системы (одинаковые на консоли и на ПК; пути внутри точки монтирования: "/alias/a/b").
+// Возвращают 0/число байт или -errno.
+int nf_getattr(const std::string& p, struct stat* st);
+int nf_readdir(const std::string& p, std::vector<std::string>& names);
+struct NfHandle;
+int nf_open(const std::string& p, NfHandle** out);
+long nf_read(NfHandle* h, char* buf, size_t size, uint64_t off);
+void nf_close(NfHandle* h);
+int nf_statfs(struct statvfs* sv);
+
+// Монтирует (один раз за запуск) и возвращает путь папки, в которой лежат шары как каталоги.
+// false: err = no_usb, no_fw, no_fuse, reload, mount (причина пишется в лог).
+bool netfs_root(std::string& root, std::string& err);
+// "/smb/alias/a/b.pkg" -> "<root>/alias/a/b.pkg"
+std::string netfs_map(const std::string& root, const std::string& smb_path);

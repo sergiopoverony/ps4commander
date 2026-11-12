@@ -26,18 +26,27 @@ SMB_OBJ  := $(addprefix build/smb2/,$(patsubst %.c,%.o,$(shell cat $(SMB_DIR)/SO
 SMB_CFLAGS := -O2 -w -include stddef.h "-D_U_=__attribute__((unused))" -DHAVE_CONFIG_H \
               -I$(SMB_DIR) -I$(SMB_DIR)/include -I$(SMB_DIR)/include/smb2 -I$(SMB_DIR)/lib
 
+# libfuse 2.9 (LGPL-2.1) с портом под PS4 из Itemzflow (GPL-3.0): third_party/libfuse
+FUSE_DIR := third_party/libfuse
+FUSE_OBJ := $(patsubst $(FUSE_DIR)/source/%.c,build/fuse/%.o,$(wildcard $(FUSE_DIR)/source/*.c))
+FUSE_CFLAGS := -O2 -w -DFUSE_USE_VERSION=26 -D_FILE_OFFSET_BITS=64 -I$(FUSE_DIR)/include
+
 all: $(TARGET)
 
 build/smb2/%.o: $(SMB_DIR)/lib/%.c
 	mkdir -p build/smb2
 	$(CC) $(SMB_CFLAGS) -c -o $@ $<
 
+build/fuse/%.o: $(FUSE_DIR)/source/%.c
+	mkdir -p build/fuse
+	$(CC) $(FUSE_CFLAGS) -c -o $@ $<
+
 $(ASSETS): web/index.html src/version.h tools/embed.py
 	mkdir -p build
 	python3 tools/embed.py $(ASSETS)
 
-$(TARGET): $(SOURCES) $(HEADERS) $(ASSETS) $(SMB_OBJ)
-	$(CXX) $(CXXFLAGS) -Isrc -Ibuild -I$(SMB_DIR)/include -o $@ $(SOURCES) $(SMB_OBJ)
+$(TARGET): $(SOURCES) $(HEADERS) $(ASSETS) $(SMB_OBJ) $(FUSE_OBJ)
+	$(CXX) $(CXXFLAGS) -D_FILE_OFFSET_BITS=64 -Isrc -Ibuild -I$(SMB_DIR)/include -I$(FUSE_DIR)/include -o $@ $(SOURCES) $(SMB_OBJ) $(FUSE_OBJ)
 
 send: $(TARGET)
 	$(PS4_DEPLOY) -h $(PS4_HOST) -p $(PS4_PORT) $(TARGET)
