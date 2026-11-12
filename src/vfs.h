@@ -33,4 +33,5 @@ int v_open_write(const std::string& p, VFile& f, uint32_t mode);
 long v_read(VFile& f, void* buf, size_t n);
 long v_write(VFile& f, const void* buf, size_t n);
 long v_pread(VFile& f, uint64_t off, void* buf, size_t n);
+void v_seek(VFile& f, uint64_t off);  // позиция для следующего v_read
 void v_close(VFile& f);

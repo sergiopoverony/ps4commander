@@ -110,6 +110,10 @@ long v_pread(VFile& f, uint64_t off, void* buf, size_t n) {
     ssize_t r = pread(f.fd, buf, n, (off_t)off);
     return r < 0 ? -(long)errno : (long)r;
 }
+void v_seek(VFile& f, uint64_t off) {
+    f.off = off;
+    if (!f.sf && f.fd >= 0) lseek(f.fd, (off_t)off, SEEK_SET);
+}
 void v_close(VFile& f) {
     if (f.sf) smb_close(f.sf);
     else if (f.fd >= 0) close(f.fd);

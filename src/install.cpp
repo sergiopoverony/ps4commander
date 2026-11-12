@@ -1,5 +1,7 @@
 #include "install.h"
 #include "fs.h"
+#include "http.h"
+#include "vfs.h"
 #include "json.h"
 #include "log.h"
 #include "platform.h"
@@ -76,17 +78,38 @@ bool any_active() { for (auto& i : g_items) if (is_active(i)) return true; retur
 [[maybe_unused]] std::string bgft_path(const std::string& p) { return p.compare(0, 6, "/data/") == 0 ? "/user" + p : p; }
 
 bool read_header(const std::string& path, std::string& cid, uint64_t& size, std::string& err) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) { err = "not_found"; return false; }
+    VFile f;
+    int oe = v_open_read(path, f);
+    if (oe) { err = fs_errname(oe); return false; }
     unsigned char h[0x64];
-    size_t n = fread(h, 1, sizeof(h), f);
-    fclose(f);
+    size_t n = 0;
+    while (n < sizeof(h)) {
+        long r = v_read(f, h + n, sizeof(h) - n);
+        if (r <= 0) break;
+        n += (size_t)r;
+    }
+    v_close(f);
     if (n < sizeof(h) || h[0] != 0x7F || h[1] != 'C' || h[2] != 'N' || h[3] != 'T') { err = "not_pkg"; return false; }
     cid.assign((const char*)h + 0x40, 36);
     for (char c : cid) if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) { err = "not_pkg"; return false; }
-    struct stat st;
-    size = stat(path.c_str(), &st) == 0 ? (uint64_t)st.st_size : 0;
+    VStat st;
+    size = v_lstat(path, st) == 0 ? st.size : 0;
     return true;
+}
+
+// Адрес для BGFT: локальные файлы по пути, файлы с сетевых папок - через наш же веб-сервер (он читает SMB и умеет Range).
+[[maybe_unused]] std::string pct(const std::string& s) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string o;
+    for (unsigned char c : s) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == '/') o += (char)c;
+        else { o += '%'; o += hex[c >> 4]; o += hex[c & 15]; }
+    }
+    return o;
+}
+[[maybe_unused]] std::string source_url(const std::string& path) {
+    if (smb_is_path(path)) return "http://127.0.0.1:" + std::to_string(http_port()) + "/api/download?path=" + pct(path);
+    return bgft_path(path);
 }
 
 #ifdef HOST_TEST
@@ -166,7 +189,8 @@ bool bgft_load() {
 }
 
 int bgft_register(const Item& it, int* task) {
-    std::string url = bgft_path(it.path);
+    std::string url = source_url(it.path);
+    app_log("BGFT: источник %s", url.c_str());
     BgftParamEx pe;
     memset(&pe, 0, sizeof(pe));
     pe.params.entitlementType = 5;
@@ -257,7 +281,6 @@ bool install_start(const std::vector<std::string>& paths, std::string& err) {
     if (paths.empty()) { err = "bad_path"; return false; }
     std::vector<Item> add;
     for (auto& p : paths) {
-        if (smb_is_path(p)) { err = "smb_pkg"; return false; }
         if (p.size() < 5 || strcasecmp(p.c_str() + p.size() - 4, ".pkg") != 0) { err = "not_pkg"; return false; }
         std::string e = fs_check_read(p);
         if (!e.empty()) { err = e; return false; }

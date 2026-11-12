@@ -77,7 +77,7 @@ open(SHARE + '/a.txt', 'w').write('hello smb\n')
 open(SHARE + '/Привет.txt', 'w').write('юникод\n')
 BIG = os.urandom(3 * 1024 * 1024 + 123)
 open(SHARE + '/sub/big.bin', 'wb').write(BIG)
-open(SHARE + '/sub/deep/x.pkg', 'wb').write(b'\x7fCNT' + b'\0' * 100)
+open(SHARE + '/sub/deep/x.pkg', 'wb').write(b'\x7fCNT' + b'\0' * 60 + b'UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS' + b'\0' * 100)
 
 srv = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'smb_server.py'), SHARE, '445'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -172,7 +172,22 @@ try:
     st, j = post('/api/rename', {'path': '/smb/nas', 'to': '/smb/zzz'})
     check('smb: корень шары нельзя переименовать', st == 403, (st, j))
     st, j = post('/api/pkg/install', {'paths': ['/smb/nas/sub/deep/x.pkg']})
-    check('smb: установка pkg прямо с шары пока отклоняется понятным кодом', st == 400 and j.get('error') == 'smb_pkg', (st, j))
+    check('smb: .pkg с шары ставится в очередь', st == 200, (st, j))
+    t0 = time.time()
+    while time.time() - t0 < 20:
+        st, j = get('/api/pkg')
+        if not j['active']: break
+        time.sleep(0.2)
+    check('smb: установка с шары завершилась', [i['st'] for i in j['items']] == ['done'], j)
+    # Range: нужен для BGFT и перемотки видео
+    st, body, hd = raw(q('/api/download', path='/smb/nas/sub/big.bin'), headers={'Range': 'bytes=1000-1999'})
+    check('Range: 206 и нужные байты', st == 206 and body == BIG[1000:2000] and hd['Content-Range'] == 'bytes 1000-1999/%d' % len(BIG), (st, hd.get('Content-Range')))
+    st, body, hd = raw(q('/api/download', path='/smb/nas/sub/big.bin'), headers={'Range': 'bytes=-100'})
+    check('Range: последние байты', st == 206 and body == BIG[-100:])
+    st, body, hd = raw(q('/api/download', path='/smb/nas/sub/big.bin'), headers={'Range': 'bytes=%d-' % (len(BIG) + 5)})
+    check('Range: за пределами файла = 416', st == 416, st)
+    st, body, hd = raw(q('/api/download', path='/smb/nas/sub/big.bin'), method='HEAD')
+    check('HEAD: размер без тела', st == 200 and body == b'' and int(hd['Content-Length']) == len(BIG) and hd['Accept-Ranges'] == 'bytes', (st, dict(hd)))
     # несуществующее
     st, j = get(q('/api/ls', path='/smb/nas/nope'))
     check('smb: нет такой папки -> ENOENT', st == 404 and j.get('error') == 'ENOENT', (st, j))

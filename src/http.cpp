@@ -55,11 +55,11 @@ static bool send_all(int fd, const char* p, size_t n) {
 
 static const char* reason(int code) {
     return code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 403 ? "Forbidden" : code == 404 ? "Not Found"
-         : code == 409 ? "Conflict" : code == 411 ? "Length Required" : "Error";
+         : code == 206 ? "Partial Content" : code == 416 ? "Range Not Satisfiable" : code == 405 ? "Method Not Allowed" : code == 409 ? "Conflict" : code == 411 ? "Length Required" : "Error";
 }
 
 static void send_head(int fd, int code, const char* ctype, long long len, bool cache, const std::string& extra = "") {
-    char head[512];
+    char head[2048];
     int n = snprintf(head, sizeof(head),
                      "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %lld\r\nConnection: close\r\n"
                      "X-Content-Type-Options: nosniff\r\nCache-Control: %s\r\n%s\r\n",
@@ -156,7 +156,30 @@ static const char* inline_type(const std::string& name) {
     return nullptr;
 }
 
-static void do_download(int fd, const std::string& n, bool inl) {
+// Разбор "bytes=a-b" / "bytes=a-" / "bytes=-n". false - заголовок не годится или диапазон за пределами файла.
+static bool parse_range(const std::string& h, uint64_t total, uint64_t& a, uint64_t& b) {
+    if (h.compare(0, 6, "bytes=") != 0 || h.find(',') != std::string::npos) return false;
+    std::string v = h.substr(6);
+    size_t dash = v.find('-');
+    if (dash == std::string::npos) return false;
+    std::string x = v.substr(0, dash), y = v.substr(dash + 1);
+    for (char c : x + y) if (c < '0' || c > '9') return false;
+    if (x.empty() && y.empty()) return false;
+    if (total == 0) return false;
+    if (x.empty()) {  // последние n байт
+        uint64_t n = strtoull(y.c_str(), nullptr, 10);
+        if (n == 0) return false;
+        a = n >= total ? 0 : total - n; b = total - 1;
+    } else {
+        a = strtoull(x.c_str(), nullptr, 10);
+        b = y.empty() ? total - 1 : strtoull(y.c_str(), nullptr, 10);
+        if (b >= total) b = total - 1;
+        if (a > b) return false;
+    }
+    return true;
+}
+
+static void do_download(int fd, const std::string& n, bool inl, const std::string& range, bool head_only) {
     std::string e = fs_check_read(n);
     if (!e.empty()) { respond_err(fd, 403, e); return; }
     VStat st;
@@ -170,14 +193,35 @@ static void do_download(int fd, const std::string& n, bool inl) {
         if (fstat(f.fd, &fst) != 0 || !S_ISREG(fst.st_mode)) { v_close(f); respond_err(fd, 400, "not_regular"); return; }
         st.size = (uint64_t)fst.st_size;
     } else if (st.dir) { v_close(f); respond_err(fd, 400, "not_regular"); return; }
+    uint64_t a = 0, b = st.size ? st.size - 1 : 0;
+    int code = 200;
+    if (!range.empty()) {
+        if (parse_range(range, st.size, a, b)) code = 206;
+        else if (st.size > 0) {
+            v_close(f);
+            char cr[96];
+            snprintf(cr, sizeof(cr), "Content-Range: bytes */%llu\r\n", (unsigned long long)st.size);
+            send_head(fd, 416, "text/plain", 0, false, cr);
+            return;
+        }
+    }
+    uint64_t len = st.size == 0 ? 0 : b - a + 1;
     const char* it = inl ? inline_type(fs_basename(n)) : nullptr;
     std::string extra = it ? "" : "Content-Disposition: attachment; filename*=UTF-8''" + pct_encode(fs_basename(n)) + "\r\n";
-    send_head(fd, 200, it ? it : "application/octet-stream", (long long)st.size, false, extra);
+    extra += "Accept-Ranges: bytes\r\n";
+    if (code == 206) {
+        char cr[96];
+        snprintf(cr, sizeof(cr), "Content-Range: bytes %llu-%llu/%llu\r\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)st.size);
+        extra += cr;
+    }
+    send_head(fd, code, it ? it : "application/octet-stream", (long long)len, false, extra);
+    if (head_only || len == 0) { v_close(f); return; }
+    v_seek(f, a);
     std::vector<char> buf(256 * 1024);
     uint64_t sent = 0;
     int tk = 0;
-    while (sent < st.size) {
-        long r = v_read(f, buf.data(), std::min<uint64_t>(buf.size(), st.size - sent));
+    while (sent < len) {
+        long r = v_read(f, buf.data(), std::min<uint64_t>(buf.size(), len - sent));
         if (r <= 0) break;
         if (!send_all(fd, buf.data(), (size_t)r)) break;
         sent += (uint64_t)r;
@@ -397,7 +441,11 @@ static void handle(int fd) {
     std::string query = qp == std::string::npos ? "" : path.substr(qp + 1);
     if (qp != std::string::npos) path.resize(qp);
 
-    if (method == "GET") {
+    std::string range_hdr;
+    { size_t rp = lower.find("\r\nrange:"); if (rp != std::string::npos) { size_t e2 = lower.find("\r\n", rp + 2); std::string v = lower.substr(rp + 8, e2 == std::string::npos ? std::string::npos : e2 - rp - 8); size_t b2 = v.find_first_not_of(" \t"); range_hdr = b2 == std::string::npos ? "" : v.substr(b2); while (!range_hdr.empty() && (range_hdr.back() == ' ' || range_hdr.back() == '\t')) range_hdr.pop_back(); } }
+    bool is_head = method == "HEAD";
+    if (is_head && path != "/api/download") { respond_err(fd, 405, "method"); close(fd); return; }
+    if (method == "GET" || is_head) {
         std::string err;
         if (path == "/" || path == "/index.html")
             respond(fd, 200, "text/html; charset=utf-8", (const char*)ASSET_INDEX_HTML, ASSET_INDEX_HTML_LEN);
@@ -425,7 +473,7 @@ static void handle(int fd) {
             }
         } else if (path == "/api/download") {
             std::string n = path_param(query, err);
-            if (n.empty()) respond_err(fd, 400, err); else do_download(fd, n, qget(query, "inline") == "1");
+            if (n.empty()) respond_err(fd, 400, err); else do_download(fd, n, qget(query, "inline") == "1", range_hdr, is_head);
         } else if (path == "/api/find") {
             std::string n = path_param(query, err);
             if (n.empty()) respond_err(fd, 400, err);
@@ -497,7 +545,11 @@ static int make_listener(int port, bool& in_use) {
     return s;
 }
 
+static int g_port = 0;
+int http_port() { return g_port; }
+
 int http_run(int port) {
+    g_port = port;
     mkdir(DATA_DIR, 0777);
     unlink(quit_flag_path().c_str());  // устаревший флаг от прошлого запуска
     bool in_use = false;

@@ -244,6 +244,15 @@ try:
     shutil.rmtree(ROOT + '/cp'); os.unlink(big)
 
     # ----- завершение
+    # Range / HEAD для локальных файлов
+    full = open(ROOT + '/src/sub/b.bin', 'rb').read()
+    st, body, hd = raw(q('/api/download', path=ROOT + '/src/sub/b.bin'), headers={'Range': 'bytes=10-19'})
+    check('local Range: 206', st == 206 and body == full[10:20] and hd['Content-Range'] == 'bytes 10-19/%d' % len(full), (st, hd.get('Content-Range')))
+    st, body, hd = raw(q('/api/download', path=ROOT + '/src/sub/b.bin'), method='HEAD')
+    check('local HEAD', st == 200 and body == b'' and int(hd['Content-Length']) == len(full))
+    st, body, hd = raw(q('/api/ls', path=ROOT), method='HEAD')
+    check('HEAD не для всех адресов', st == 405, st)
+
     # запоминание панелей
     st, j = get('/api/state')
     check('state: изначально пусто', st == 200 and j.get('l', '') == '' and j.get('r', '') == '', j)
