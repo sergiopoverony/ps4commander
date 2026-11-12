@@ -426,6 +426,7 @@ void worker() {
         }
         if (g_cancel) { set(it, "cancelled"); }
         else run_item(it);
+        { std::lock_guard<std::mutex> l(g_mu); app_log("установка %s: итог %s%s%s", it->name.c_str(), it->status.c_str(), it->msg.empty() ? "" : " ", it->msg.c_str()); }
         bool fin; bool bad = false; std::string last;
         {
             std::lock_guard<std::mutex> l(g_mu);
