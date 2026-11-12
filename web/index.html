@@ -63,6 +63,7 @@ body.unsafe #unsafeTag { display: inline; }
 #overlay.on { display: flex; }
 .dlg { background: var(--dlg-bg); color: var(--dlg-fg); border: 3px double var(--dlg-border); padding: 10px 14px; min-width: min(420px, 92vw); max-width: min(900px, 96vw); max-height: 92vh; display: flex; flex-direction: column; gap: 8px; box-shadow: 8px 8px 0 rgba(0,0,0,.5); }
 .dlg.wide { width: min(960px, 96vw); height: 86vh; }
+.dlg.wide.fit { height: auto; max-height: 92vh; }
 .dlg.err { background: #aa0000; color: #fff; }
 .dlg h3 { margin: 0; text-align: center; font-size: 15px; }
 .dlg .body { overflow: auto; white-space: pre-wrap; word-break: break-word; min-height: 0; }
@@ -823,11 +824,11 @@ function showRelated(j, smb) {
     installPaths(sel);
   } };
   const head = h('div', { style: 'margin-bottom:8px' }, t('pkgRelHead', { tid: j.tid, title: j.title || '' }));
-  const list = h('div', { style: 'max-height:50vh;overflow:auto' }, rows.map(r => r.label));
+  const list = h('div', null, rows.map(r => r.label));
   const body = [head, list];
   if (j.trunc) body.push(h('div', { style: 'margin-top:8px;opacity:.8' }, t('pkgTrunc')));
   if (smb) body.push(h('div', { style: 'margin-top:8px;opacity:.8;white-space:pre-wrap' }, t('installSmbNote')));
-  const d = dialog(t('pkgRelTitle'), body, [btn, { label: t('cancel'), fn: closeDlg }], 'wide');
+  const d = dialog(t('pkgRelTitle'), body, [btn, { label: t('cancel'), fn: closeDlg }], 'wide fit');
   const primary = d.querySelector('button.primary');
   const upd = () => { primary.textContent = t('pkgSel', { n: count() }); };
   rows.forEach(r => r.cb.addEventListener('change', upd));
@@ -837,7 +838,7 @@ function showPkgQueue() {
   const box = h('pre', { style: 'margin:0;white-space:pre-wrap;max-height:50vh;overflow:auto' });
   dialog(t('pkgTitle'), [box], [
     { label: t('cancel'), fn: () => { api('/api/pkg/cancel', {}).catch(() => {}); } },
-    { label: t('close'), primary: true, fn: closeDlg }], 'wide');
+    { label: t('close'), primary: true, fn: closeDlg }], 'wide fit');
   dlgClose = () => clearTimeout(pollTimer);
   const stName = { queued: 'stQueued', registering: 'stRegistering', installing: 'stInstalling', done: 'stDone', already_installed: 'stAlready', failed: 'stFailed', cancelled: 'stCancelled' };
   const tick = async () => {

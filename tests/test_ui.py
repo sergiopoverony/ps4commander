@@ -264,6 +264,7 @@ try:
         pg.wait_for_function('()=>document.querySelectorAll(".dlg input[type=checkbox]").length===3', timeout=10000)
         txt = pg.locator('.dlg').inner_text()
         check('окно выбора: игра, патч и DLC с галочками', 'Game.pkg' in txt and 'Patch.pkg' in txt and 'Extra.pkg' in txt and pg.locator('.dlg input:checked').count() == 3, txt)
+        check('высота окна выбора по содержимому, а не во весь экран', pg.evaluate('()=>document.querySelector(".dlg").getBoundingClientRect().height') < 0.6 * 760, pg.evaluate('()=>document.querySelector(".dlg").getBoundingClientRect().height'))
         pg.locator('.dlg input[type=checkbox]').nth(2).uncheck()
         check('счётчик выбранных обновился', '(2)' in pg.locator('.dlg button.primary').inner_text(), pg.locator('.dlg button.primary').inner_text())
         pg.locator('.dlg button.primary').click()
