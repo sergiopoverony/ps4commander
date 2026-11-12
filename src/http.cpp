@@ -234,6 +234,7 @@ static void do_download(int fd, const std::string& n, bool inl, const std::strin
 
 // Положение панелей хранится на консоли, чтобы было одинаковым с любого устройства.
 static std::string state_path() { return std::string(DATA_DIR) + "/state.json"; }
+static bool theme_ok(const std::string& t) { return t == "classic" || t == "dark" || t == "light"; }
 static std::string state_read() {
     FILE* f = fopen(state_path().c_str(), "rb");
     if (!f) return "{}";
@@ -243,13 +244,14 @@ static std::string state_read() {
     std::string s(b, n);
     JsonObj j = json_parse(s);
     if (!j.ok) return "{}";
-    return "{\"l\":\"" + json_esc(j.get_str("l")) + "\",\"r\":\"" + json_esc(j.get_str("r")) + "\"}";
+    std::string th = j.get_str("theme");
+    return "{\"l\":\"" + json_esc(j.get_str("l")) + "\",\"r\":\"" + json_esc(j.get_str("r")) + "\",\"theme\":\"" + (theme_ok(th) ? th : "") + "\"}";
 }
-static bool state_write(const std::string& l, const std::string& r) {
+static bool state_write(const std::string& l, const std::string& r, const std::string& theme) {
     std::string tmp = state_path() + ".tmp";
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return false;
-    std::string o = "{\"l\":\"" + json_esc(l) + "\",\"r\":\"" + json_esc(r) + "\"}";
+    std::string o = "{\"l\":\"" + json_esc(l) + "\",\"r\":\"" + json_esc(r) + "\",\"theme\":\"" + (theme_ok(theme) ? theme : "") + "\"}";
     bool ok = fwrite(o.data(), 1, o.size(), f) == o.size();
     ok = fclose(f) == 0 && ok;
     if (!ok) { unlink(tmp.c_str()); return false; }
@@ -394,10 +396,14 @@ static void handle_post(int fd, const std::string& path, const std::string& body
     } else if (path == "/api/state") {
         // l - левая панель, r - правая; отсутствующее поле оставляет прежнее значение
         JsonObj old = json_parse(state_read());
-        std::string l = old.get_str("l"), r = old.get_str("r");
+        std::string l = old.get_str("l"), r = old.get_str("r"), theme = old.get_str("theme");
         if (j.str.count("l")) { l = fs_normalize(j.get_str("l")); }
         if (j.str.count("r")) { r = fs_normalize(j.get_str("r")); }
-        if (state_write(l, r)) respond_json(fd, 200, "{\"ok\":true}"); else respond_err(fd, 400, "write_failed");
+        if (j.str.count("theme")) {
+            if (!theme_ok(j.get_str("theme"))) { respond_err(fd, 400, "bad_value"); return; }
+            theme = j.get_str("theme");
+        }
+        if (state_write(l, r, theme)) respond_json(fd, 200, "{\"ok\":true}"); else respond_err(fd, 400, "write_failed");
     } else if (path == "/api/smb/save") {
         SmbConn c;
         c.alias = j.get_str("alias"); c.host = j.get_str("host"); c.share = j.get_str("share");
