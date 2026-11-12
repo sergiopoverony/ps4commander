@@ -92,6 +92,11 @@ body.unsafe #unsafeTag { display: inline; }
 .viewer { flex: 1; min-height: 0; overflow: auto; background: var(--input-bg); color: var(--input-fg); padding: 6px; font-size: 13px; line-height: 17px; white-space: pre; margin: 0; }
 .kv { color: var(--dim); }
 .dlg [hidden] { display: none !important; }
+.hostbox { flex-wrap: nowrap; align-items: stretch; justify-content: stretch; }
+.hostbox input { flex: 1; min-width: 0; }
+.srvlist { display: flex; flex-direction: column; border: 1px solid var(--dlg-border); background: var(--input-bg); color: var(--input-fg); max-height: 150px; overflow: auto; }
+.srvlist div { padding: 5px 10px; cursor: pointer; }
+.srvlist div:hover { background: var(--cur-bg); color: var(--cur-fg); }
 .mrow { display: flex; justify-content: center; gap: 28px; flex-wrap: wrap; }
 .rootbox { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
 .qrbox { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
@@ -133,6 +138,9 @@ body.unsafe #unsafeTag { display: inline; }
 :root:is([data-theme="dark"], [data-theme="light"]) .dlg.err { background: var(--err-bg); color: var(--err-fg); border-color: var(--warn); }
 :root:is([data-theme="dark"], [data-theme="light"]) .dlg input[type=text], :root:is([data-theme="dark"], [data-theme="light"]) .dlg input[type=password], :root:is([data-theme="dark"], [data-theme="light"]) .dlg select { box-sizing: border-box; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--dlg-border); border-radius: 12px; padding: 9px 12px; font: inherit; }
 :root:is([data-theme="dark"], [data-theme="light"]) .dlg input[type=text]:focus, :root:is([data-theme="dark"], [data-theme="light"]) .dlg input[type=password]:focus, :root:is([data-theme="dark"], [data-theme="light"]) .dlg select:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+:root:is([data-theme="dark"], [data-theme="light"]) .srvlist { border-radius: 12px; padding: 4px; }
+:root:is([data-theme="dark"], [data-theme="light"]) .srvlist div { border-radius: 8px; padding: 7px 12px; }
+:root:is([data-theme="dark"], [data-theme="light"]) .srvlist div:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
 :root:is([data-theme="dark"], [data-theme="light"]) .qrbox img { border-radius: 16px; }
 :root:is([data-theme="dark"], [data-theme="light"]) .dlg input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; }
 :root:is([data-theme="dark"], [data-theme="light"]) .btns { gap: 12px; margin-top: 4px; }
@@ -210,13 +218,13 @@ const TR = {
     stQueued:'queued', stRegistering:'registering', stInstalling:'installing', stDone:'installed', stAlready:'already installed', stFailed:'failed', stCancelled:'cancelled', e_not_pkg:'Not a valid .pkg file', e_no_bgft:'System installer (BGFT) is not available',
     zipStarted:'Folder download started as a ZIP archive (built on the fly, no temporary files)',
     smbTitle:'Network folders (SMB)', smbAdd:'Add', smbEdit:'Edit', smbDel:'Remove', smbOpen:'Open', smbNone:'No network folders yet',
-    smbAlias:'Name (letters, digits, - _ .)', smbHost:'Server address (IP or name)', smbShare:'Share name', smbUser:'User', smbPass:'Password', smbPassKeep:'(leave empty to keep the saved one)', smbDomain:'Domain (optional)',
+    smbAlias:'Mount folder name (letters, digits, - _ .)', smbHost:'Server address (IP or name)', smbShare:'Share name', smbUser:'User', smbPass:'Password', smbPassKeep:'(leave empty to keep the saved one)', smbDomain:'Domain (optional)',
     smbSave:'Connect and save', smbConnecting:'Connecting...', smbDelQ:'Remove the saved connection "{n}"? Files on the server are not touched.', smbSaved:'Saved',
     e_smb_auth:'Wrong user name or password', e_smb_share:'Share not found on the server',
     e_bad_alias:'Invalid name', e_bad_host:'Invalid server address', e_bad_share:'Invalid share name', e_ECONNREFUSED:'Connection refused (is SMB enabled on the server?)',
     e_ETIMEDOUT:'Server did not answer in time', e_EHOSTUNREACH:'Server is unreachable', e_ENETUNREACH:'Network is unreachable', e_ECONNRESET:'Connection to the server was lost', e_ENOTCONN:'Not connected to the server',
     installSmbNote:'The package is on a network folder: it is read through a FUSE folder, without copying (needs a supported firmware). If that is not possible, copy it to the console with F5 and install from there. The installation speed depends directly on the connection type; a LAN cable is recommended.',
-    smbFind:'Find servers on the network', smbFinding:'Scanning the network... {d}/{t}', smbFound:'Found servers: {n}', smbFoundNone:'No SMB servers found', smbShares:'Connect', smbSharesN:'Shares found: {n}', smbPickShare:'Press "Connect" to list the folders', smbManual:'Enter manually...', smbNoHost:'Enter the server address', smbNoShare:'Choose a share (press "Connect")', smbPickHost:'Found servers: {n} - choose one', support:'Support the project', supportCap:'PayPal',
+    smbFind:'Find', smbFinding:'Scanning the network... {d}/{t}', smbFound:'Found servers: {n}', smbFoundNone:'No SMB servers found', smbShares:'Connect', smbSharesN:'Shares found: {n}', smbPickShare:'Press "Connect" to list the folders', smbManual:'Enter manually...', smbNoHost:'Enter the server address', smbNoShare:'Choose a share (press "Connect")', smbFindTip:'Find servers on the network', support:'Support the project', supportCap:'PayPal',
     e_smb_enum:'Could not get the list of shares (try entering the name manually)', e_no_net:'Cannot determine the local network',
     helpTitle:'Keys',
     helpBody:'Tab - switch panel\nUp/Down/PgUp/PgDn/Home/End - move\nEnter - open folder / view file / install .pkg\nBackspace - parent folder\nInsert or Space - select\n+ / - / * - select all / none / invert\nF2 - refresh   F3 - view   F4 - edit text   Shift+F4 - new file\nF5 - copy   F6 - move   Shift+F6 - rename   F7 - new folder\nF8 or Delete - delete   F9 - permissions   I - install selected .pkg   N - network folders (SMB)\n+ / - select / deselect by mask   * invert   Ctrl+A all\nCtrl+F or Alt+F7 - find files   Alt+Enter - properties   Ctrl+G - go to path\nF10 or Esc - menu\n\nCtrl+D - download (a folder or several items come as a ZIP)\n\nDrag files from your computer onto a panel to upload them.\nOn a touch screen: tap a row to select the cursor, tap again to open, tap the left cell to mark.'
@@ -257,13 +265,13 @@ const TR = {
     stQueued:'в очереди', stRegistering:'регистрация', stInstalling:'установка', stDone:'установлено', stAlready:'уже установлено', stFailed:'ошибка', stCancelled:'отменено', e_not_pkg:'Это не корректный .pkg файл', e_no_bgft:'Системный установщик (BGFT) недоступен',
     zipStarted:'Скачивание папки началось в виде ZIP-архива (собирается на лету, временных файлов нет)',
     smbTitle:'Сетевые папки (SMB)', smbAdd:'Добавить', smbEdit:'Изменить', smbDel:'Удалить', smbOpen:'Открыть', smbNone:'Сетевых папок пока нет',
-    smbAlias:'Имя (буквы, цифры, - _ .)', smbHost:'Адрес сервера (IP или имя)', smbShare:'Имя общей папки', smbUser:'Пользователь', smbPass:'Пароль', smbPassKeep:'(пусто - оставить сохранённый)', smbDomain:'Домен (необязательно)',
+    smbAlias:'Имя папки монтирования (буквы, цифры, - _ .)', smbHost:'Адрес сервера (IP или имя)', smbShare:'Имя общей папки', smbUser:'Пользователь', smbPass:'Пароль', smbPassKeep:'(пусто - оставить сохранённый)', smbDomain:'Домен (необязательно)',
     smbSave:'Подключить и сохранить', smbConnecting:'Подключение...', smbDelQ:'Удалить сохранённое подключение «{n}»? Файлы на сервере не затрагиваются.', smbSaved:'Сохранено',
     e_smb_auth:'Неверный логин или пароль', e_smb_share:'Такой общей папки нет на сервере',
     e_bad_alias:'Недопустимое имя', e_bad_host:'Недопустимый адрес сервера', e_bad_share:'Недопустимое имя общей папки', e_ECONNREFUSED:'Соединение отклонено (включён ли SMB на сервере?)',
     e_ETIMEDOUT:'Сервер не ответил вовремя', e_EHOSTUNREACH:'Сервер недоступен', e_ENETUNREACH:'Сеть недоступна', e_ECONNRESET:'Соединение с сервером потеряно', e_ENOTCONN:'Нет соединения с сервером',
     installSmbNote:'Пакет лежит в сетевой папке: он читается через папку FUSE, без копирования (нужна поддерживаемая прошивка). Если не получится - скопируйте его на консоль клавишей F5 и ставьте оттуда. Скорость установки напрямую зависит от способа подключения, рекомендуется использовать LAN.',
-    smbFind:'Найти серверы в сети', smbFinding:'Поиск в сети... {d}/{t}', smbFound:'Найдено серверов: {n}', smbFoundNone:'SMB-серверов не найдено', smbShares:'Подключиться', smbSharesN:'Найдено папок: {n}', smbPickShare:'Нажмите «Подключиться», чтобы увидеть папки', smbManual:'Ввести вручную...', smbNoHost:'Введите адрес сервера', smbNoShare:'Выберите папку (кнопка «Подключиться»)', smbPickHost:'Найдено серверов: {n} - выберите', support:'Поддержать проект', supportCap:'СБП',
+    smbFind:'Найти', smbFinding:'Поиск в сети... {d}/{t}', smbFound:'Найдено серверов: {n}', smbFoundNone:'SMB-серверов не найдено', smbShares:'Подключиться', smbSharesN:'Найдено папок: {n}', smbPickShare:'Нажмите «Подключиться», чтобы увидеть папки', smbManual:'Ввести вручную...', smbNoHost:'Введите адрес сервера', smbNoShare:'Выберите папку (кнопка «Подключиться»)', smbFindTip:'Найти серверы в сети', support:'Поддержать проект', supportCap:'СБП',
     e_smb_enum:'Не удалось получить список папок (введите имя вручную)', e_no_net:'Не удалось определить локальную сеть',
     helpTitle:'Клавиши',
     helpBody:'Tab - сменить панель\nВверх/Вниз/PgUp/PgDn/Home/End - перемещение\nEnter - открыть папку / просмотреть файл / установить .pkg\nBackspace - на уровень выше\nInsert или Пробел - отметить\n+ / - / * - отметить всё / снять / инвертировать\nF2 - обновить   F3 - просмотр   F4 - правка текста   Shift+F4 - новый файл\nF5 - копировать   F6 - перенести   Shift+F6 - переименовать   F7 - новая папка\nF8 или Delete - удалить   F9 - права   I - установить отмеченные .pkg   N - сетевые папки (SMB)\n+ / - отметить / снять по маске   * инвертировать   Ctrl+A всё\nCtrl+F или Alt+F7 - поиск файлов   Alt+Enter - свойства   Ctrl+G - перейти по пути\nF10 или Esc - меню\n\nCtrl+D - скачать (папка или несколько объектов приходят ZIP-архивом)\n\nПеретащите файлы с компьютера на панель, чтобы загрузить их.\nНа сенсорном экране: касание строки ставит курсор, повторное открывает, касание левой ячейки отмечает.'
@@ -970,12 +978,11 @@ function editSmb(c) {
   if (c) f.alias.i.disabled = true;
   f.pass.i.setAttribute('autocomplete', 'new-password');
   const st = h('div', { class: 'kv' });
-  // найденные серверы: выбор из списка подставляет адрес
-  const hostPick = h('select', { style: 'width:100%', hidden: true });
-  hostPick.addEventListener('change', () => { if (hostPick.value) { f.host.i.value = hostPick.value; hostPick.selectedIndex = 0; f.user.i.focus(); } });
+  // одно поле адреса: можно ввести вручную или нажать «Найти» и выбрать сервер из списка под полем
+  const srvList = h('div', { class: 'srvlist', hidden: true });
   const fillHosts = list => {
-    hostPick.replaceChildren(h('option', { value: '' }, t('smbPickHost', { n: list.length })), ...list.map(ip => h('option', { value: ip }, ip)));
-    hostPick.hidden = !list.length;
+    srvList.replaceChildren(...list.map(ip => h('div', { onclick: () => { f.host.i.value = ip; srvList.hidden = true; f.user.i.focus(); } }, ip)));
+    srvList.hidden = !list.length;
   };
   let scanTimer = 0;
   const findBtn = h('button', { onclick: async () => {
@@ -990,6 +997,8 @@ function editSmb(c) {
     };
     poll();
   } }, t('smbFind'));
+  findBtn.title = t('smbFindTip');
+  f.host.row = h('div', { style: col + ';text-align:center' }, t('smbHost'), h('div', { class: 'btns hostbox', style: 'margin:0;gap:8px' }, f.host.i, findBtn), srvList);
   // общая папка: список появляется после подключения; если сервер список не отдаёт, можно ввести имя вручную
   const MANUAL = '__manual__';
   const shareSel = h('select', { style: 'width:100%' }), shareIn = h('input', { type: 'text', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', hidden: true });
@@ -1025,7 +1034,7 @@ function editSmb(c) {
     clearTimeout(scanTimer); closeDlg(); say(t('smbSaved')); await refreshAll();
     load(panels[active], '/smb/' + body.alias, null);
   };
-  dialog(t('smbTitle'), [f.alias.row, f.host.row, h('div', { class: 'btns' }, findBtn), hostPick, f.user.row, f.pass.row, f.domain.row, h('div', { class: 'btns' }, connectBtn), shareRow, st],
+  dialog(t('smbTitle'), [f.alias.row, f.host.row, f.user.row, f.pass.row, f.domain.row, h('div', { class: 'btns' }, connectBtn), shareRow, st],
     [{ label: t('smbSave'), primary: true, fn: save }, { label: t('cancel'), fn: () => { clearTimeout(scanTimer); closeDlg(); showSmb(); } }]);
   dlgClose = () => clearTimeout(scanTimer);
   for (const el of [...Object.values(f).map(x => x.i), shareIn]) el.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); save(); } });
