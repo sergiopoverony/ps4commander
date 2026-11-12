@@ -296,6 +296,13 @@ try:
         pg.evaluate('()=>refreshAll()')
         pg.wait_for_function('()=>panels[0].entries.some(e=>e.n==="inner")')
 
+        # окно очереди установки открывается клавишей Q
+        pg.keyboard.press('q')
+        pg.wait_for_selector('.dlg .pq')
+        check('Q открывает очередь установки', pg.locator('.dlg .pq').count() == 1)
+        pg.keyboard.press('Escape')
+        pg.wait_for_function('()=>!overlay.classList.contains("on")')
+
         # скачивание папки ZIP-архивом
         pg.evaluate('()=>{const p=panels[0];p.sel.clear();p.cur=p.view.findIndex(e=>e.n==="inner");render(p)}')
         with pg.expect_download(timeout=15000) as dl:
