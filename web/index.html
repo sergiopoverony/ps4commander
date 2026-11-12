@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PS4 Commander</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%2300007a'/%3E%3Crect x='4' y='6' width='11' height='20' fill='none' stroke='%2355ffff' stroke-width='2'/%3E%3Crect x='17' y='6' width='11' height='20' fill='none' stroke='%2355ffff' stroke-width='2'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #00007a; --panel: #0000a8; --border: #55ffff; --text: #a8a8ff; --dir: #ffffff;
+  --sel: #ffff55; --cur-bg: #00a8a8; --cur-fg: #000000; --dim: #7a7ac8; --bar-bg: #00a8a8; --bar-fg: #000000;
+  --bar-num: #a8a8a8; --bar-num-fg: #000000; --warn: #ff5555; --ok: #55ff55; --dlg-bg: #a8a8a8; --dlg-fg: #000000;
+  --dlg-border: #ffffff; --input-bg: #000000; --input-fg: #55ffff; --danger-bg: #5a0000;
+}
+:root[data-theme="dark"] {
+  --bg: #12151c; --panel: #171b24; --border: #3a4a63; --text: #c9d1e0; --dir: #ffffff;
+  --sel: #ffd166; --cur-bg: #2a3b57; --cur-fg: #ffffff; --dim: #7d8aa3; --bar-bg: #1f2633; --bar-fg: #dfe6f3;
+  --bar-num: #3a4a63; --bar-num-fg: #ffffff; --warn: #ff6b6b; --ok: #6bdc8b; --dlg-bg: #202838; --dlg-fg: #e6ecf7;
+  --dlg-border: #5a6c8c; --input-bg: #0f131a; --input-fg: #e6ecf7; --danger-bg: #3a1217;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 15px/20px ui-monospace, "DejaVu Sans Mono", Consolas, "Liberation Mono", monospace; overflow: hidden; }
+#app { height: 100%; display: flex; flex-direction: column; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); gap: 6px; }
+#top { display: flex; align-items: center; gap: 10px; color: var(--border); flex: none; }
+#top b { color: var(--dir); }
+#top .sp { flex: 1; }
+#dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); display: inline-block; }
+#dot.off { background: var(--warn); }
+button { font: inherit; cursor: pointer; }
+.tb { background: transparent; color: var(--border); border: 1px solid var(--border); padding: 0 10px; height: 26px; }
+.tb:hover { background: var(--cur-bg); color: var(--cur-fg); }
+#unsafeTag { color: var(--warn); font-weight: bold; display: none; }
+body.unsafe #unsafeTag { display: inline; }
+#panels { flex: 1; min-height: 0; display: flex; gap: 6px; }
+.panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel);
+  border: 2px double var(--border); }
+.panel.active .ph { background: var(--cur-bg); color: var(--cur-fg); }
+.panel.danger1 { background: var(--danger-bg); }
+.ph { text-align: center; color: var(--dir); padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; flex: none; cursor: pointer; }
+.ph span { direction: ltr; unicode-bidi: plaintext; }
+.ch { display: flex; color: var(--border); border-bottom: 1px solid var(--border); flex: none; user-select: none; }
+.ch div { cursor: pointer; padding: 0 4px; }
+.col-m { width: 26px; } .col-n { flex: 1; min-width: 0; } .col-s { width: 82px; text-align: right; } .col-d { width: 138px; } .col-a { width: 46px; text-align: center; }
+.list { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; }
+.spacer { position: absolute; left: 0; top: 0; width: 1px; }
+.row { position: absolute; left: 0; right: 0; height: 20px; display: flex; white-space: nowrap; cursor: default; }
+.row > div { padding: 0 4px; overflow: hidden; text-overflow: ellipsis; }
+.row.dir .col-n { color: var(--dir); font-weight: bold; }
+.row.link .col-n { color: var(--ok); }
+.row.sel .col-n, .row.sel .col-s { color: var(--sel); font-weight: bold; }
+.row.cur { background: var(--cur-bg); }
+.row.cur > div { color: var(--cur-fg) !important; }
+.row .col-m { text-align: center; color: var(--sel); }
+.row .col-s, .row .col-d, .row .col-a { color: var(--dim); }
+.pf { border-top: 1px solid var(--border); color: var(--border); padding: 0 6px; display: flex; justify-content: space-between; gap: 10px; flex: none; white-space: nowrap; overflow: hidden; }
+#msg { flex: none; min-height: 20px; color: var(--sel); padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#keys { flex: none; display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; }
+#keys button { border: 0; background: var(--bar-bg); color: var(--bar-fg); height: 28px; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 4px; justify-content: flex-start; }
+#keys button i { font-style: normal; background: var(--bar-num); color: var(--bar-num-fg); padding: 0 4px; height: 100%; display: inline-flex; align-items: center; }
+#keys button:hover { filter: brightness(1.15); }
+#overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; padding: 10px; }
+#overlay.on { display: flex; }
+.dlg { background: var(--dlg-bg); color: var(--dlg-fg); border: 3px double var(--dlg-border); padding: 10px 14px; min-width: min(420px, 92vw); max-width: min(900px, 96vw); max-height: 92vh; display: flex; flex-direction: column; gap: 8px; box-shadow: 8px 8px 0 rgba(0,0,0,.5); }
+.dlg.wide { width: min(960px, 96vw); height: 86vh; }
+.dlg.err { background: #aa0000; color: #fff; }
+.dlg h3 { margin: 0; text-align: center; font-size: 15px; }
+.dlg .body { overflow: auto; white-space: pre-wrap; word-break: break-word; min-height: 0; }
+.dlg input[type=text] { width: 100%; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--dlg-border); padding: 3px 6px; font: inherit; }
+.dlg label { display: flex; gap: 6px; align-items: center; }
+.btns { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.btns button { background: var(--bar-bg); color: var(--bar-fg); border: 1px solid var(--dlg-border); padding: 2px 16px; min-height: 28px; }
+.btns button.primary { font-weight: bold; outline: 2px solid var(--dlg-fg); }
+.btns button.bad { background: #aa0000; color: #fff; }
+.bar { height: 16px; background: var(--input-bg); border: 1px solid var(--dlg-border); }
+.bar i { display: block; height: 100%; background: var(--cur-bg); width: 0; }
+.viewer { flex: 1; min-height: 0; overflow: auto; background: var(--input-bg); color: var(--input-fg); padding: 6px; font-size: 13px; line-height: 17px; white-space: pre; margin: 0; }
+.kv { color: var(--dim); }
+@media (max-width: 760px) {
+  #panels { flex-direction: column; }
+  .col-d, .col-a { display: none; }
+  #keys { grid-template-columns: repeat(5, 1fr); }
+  #keys button { height: 34px; }
+  html, body { font-size: 14px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <span><b>PS4 Commander</b> <span id="ver">__VERSION__</span></span>
+    <span id="dot" title=""></span>
+    <span id="unsafeTag"></span>
+    <span class="sp"></span>
+    <button class="tb" id="btnMenu"></button>
+  </div>
+  <div id="panels"></div>
+  <div id="msg"></div>
+  <div id="keys"></div>
+</div>
+<div id="overlay"></div>
+<input type="file" id="file" multiple style="display:none">
+<script>
+'use strict';
+// ---------- переводы (встроены: страница самодостаточна) ----------
+const TR = {
+  en: {
+    menu:'Menu', help:'Help', view:'View', copy:'Copy', move:'Move', rename:'Rename', mkdir:'MkDir', del:'Delete', chmod:'Chmod',
+    refresh:'Refresh', upload:'Upload', download:'Download', quit:'Quit', select:'Select', swap:'Swap',
+    cancel:'Cancel', ok:'OK', yes:'Yes', close:'Close', start:'Start', name:'Name', size:'Size', date:'Date', attr:'Attr',
+    dirTag:'<DIR>', lnkTag:'<LNK>', free:'free', of:'of', selected:'selected', items:'items', empty:'(empty)',
+    copyTo:'Copy {n} to:', moveTo:'Move {n} to:', overwrite:'Overwrite existing files', recursive:'Apply recursively',
+    newName:'New name:', newFolder:'New folder name:', modeOct:'Permissions (octal, e.g. 755):',
+    delOne:'Delete "{n}"?', delMany:'Delete {n} items?', delWarn:'This cannot be undone.',
+    opCopy:'Copying', opMove:'Moving', opDelete:'Deleting', opChmod:'Changing permissions', scanning:'Counting files...',
+    done:'Done', doneErr:'Finished with errors', cancelled:'Cancelled', errorsTitle:'Errors', files:'files', speed:'Speed', elapsed:'Elapsed',
+    viewText:'Text', viewHex:'Hex', prev:'Prev', next:'Next', loading:'Loading...', noConn:'No connection to the console',
+    quitQ:'Shut down ps4commander?', bye:'ps4commander has been shut down. You can close this page.',
+    unsafeOn:'SYSTEM AREAS UNLOCKED', unsafeBtn:'Allow changes in system areas', unsafeWarn:'Changing files in /system, /dev and similar places can make the console unusable. Enable only if you know what you are doing.',
+    theme:'Theme', lang:'Language', themeClassic:'Classic', themeDark:'Dark', roots:'Go to...', rootsTitle:'Go to',
+    uploading:'Uploading', uploadDone:'Uploaded: {n}', openedErr:'Cannot open',
+    e_EACCES:'Permission denied', e_EPERM:'Operation not permitted', e_ENOENT:'Not found', e_EEXIST:'Already exists',
+    e_ENOTEMPTY:'Folder is not empty', e_ENOSPC:'No space left', e_EROFS:'Read-only file system', e_EBUSY:'Busy', e_EIO:'I/O error',
+    e_busy:'Another operation is running', e_protected:'This folder is protected and cannot be changed',
+    e_unsafe:'System area. Enable "Allow changes in system areas" in the menu first.', e_bad_name:'Invalid name', e_bad_path:'Invalid path',
+    e_into_self:'Cannot copy a folder into itself', e_same_path:'Source and destination are the same', e_bad_dest:'Destination is not a folder',
+    e_bad_mode:'Invalid permissions', e_outside_root:'Outside the allowed folder', e_unsupported:'Unsupported file type', e_generic:'Error',
+    edit:'Edit', newFile:'New file', find:'Find', findTitle:'Find files', findLabel:'Name or mask (e.g. *.txt) in the current folder and below:', searchBtn:'Search',
+    noResults:'Nothing found', scannedN:'checked {n} items', truncNote:'Search stopped early; narrow the query or the folder.', infoTitle:'Properties', calcSize:'Calculate size',
+    maskSel:'Select by mask:', maskDesel:'Deselect by mask:', gotoLabel:'Go to path:', go:'Go', logTitle:'Log', tooBig:'File is larger than 1 MB: editing is not possible. Use download.',
+    binaryNoEdit:'This looks like a binary file; editing is disabled.', saved:'Saved', unsavedQ:'Close without saving?', save:'Save', newFileName:'New file name:', exists:'Already exists',
+    typeDir:'Folder', typeFile:'File', typeLink:'Symbolic link', typeOther:'Other', fPath:'Path', fType:'Type', fSize:'Size', fMode:'Permissions', fOwner:'Owner', fTime:'Modified', fTarget:'Link target',
+    objects:'objects', total:'Total', info:'Info',
+    helpTitle:'Keys',
+    helpBody:'Tab - switch panel\nUp/Down/PgUp/PgDn/Home/End - move\nEnter - open folder / view file\nBackspace - parent folder\nInsert or Space - select\n+ / - / * - select all / none / invert\nF2 - refresh   F3 - view   F4 - edit text   Shift+F4 - new file\nF5 - copy   F6 - move   Shift+F6 - rename   F7 - new folder\nF8 or Delete - delete   F9 - permissions\n+ / - select / deselect by mask   * invert   Ctrl+A all\nCtrl+F or Alt+F7 - find files   Alt+Enter - properties   Ctrl+G - go to path\nF10 or Esc - menu\n\nDrag files from your computer onto a panel to upload them.\nOn a touch screen: tap a row to select the cursor, tap again to open, tap the left cell to mark.'
+  },
+  ru: {
+    menu:'Меню', help:'Помощь', view:'Просмотр', copy:'Копия', move:'Перенос', rename:'Имя', mkdir:'Папка', del:'Удалить', chmod:'Права',
+    refresh:'Обновить', upload:'Загрузить', download:'Скачать', quit:'Выход', select:'Отметить', swap:'Обмен',
+    cancel:'Отмена', ok:'OK', yes:'Да', close:'Закрыть', start:'Начать', name:'Имя', size:'Размер', date:'Дата', attr:'Права',
+    dirTag:'<ПАПКА>', lnkTag:'<ССЫЛКА>', free:'свободно', of:'из', selected:'отмечено', items:'объектов', empty:'(пусто)',
+    copyTo:'Копировать {n} в:', moveTo:'Перенести {n} в:', overwrite:'Перезаписывать существующие файлы', recursive:'Применить ко всем вложенным',
+    newName:'Новое имя:', newFolder:'Имя новой папки:', modeOct:'Права (восьмеричные, например 755):',
+    delOne:'Удалить «{n}»?', delMany:'Удалить объектов: {n}?', delWarn:'Это нельзя отменить.',
+    opCopy:'Копирование', opMove:'Перенос', opDelete:'Удаление', opChmod:'Смена прав', scanning:'Подсчёт файлов...',
+    done:'Готово', doneErr:'Завершено с ошибками', cancelled:'Отменено', errorsTitle:'Ошибки', files:'файлов', speed:'Скорость', elapsed:'Прошло',
+    viewText:'Текст', viewHex:'Hex', prev:'Назад', next:'Далее', loading:'Загрузка...', noConn:'Нет связи с консолью',
+    quitQ:'Выключить ps4commander?', bye:'ps4commander выключен. Страницу можно закрыть.',
+    unsafeOn:'СИСТЕМНЫЕ ОБЛАСТИ РАЗБЛОКИРОВАНЫ', unsafeBtn:'Разрешить изменения в системных областях', unsafeWarn:'Изменение файлов в /system, /dev и подобных местах может сделать консоль неработоспособной. Включайте, только если понимаете, что делаете.',
+    theme:'Тема', lang:'Язык', themeClassic:'Классика', themeDark:'Тёмная', roots:'Перейти...', rootsTitle:'Перейти',
+    uploading:'Загрузка', uploadDone:'Загружено: {n}', openedErr:'Не удалось открыть',
+    e_EACCES:'Нет доступа', e_EPERM:'Операция запрещена', e_ENOENT:'Не найдено', e_EEXIST:'Уже существует',
+    e_ENOTEMPTY:'Папка не пуста', e_ENOSPC:'Нет места', e_EROFS:'Файловая система только для чтения', e_EBUSY:'Занято', e_EIO:'Ошибка ввода-вывода',
+    e_busy:'Уже выполняется другая операция', e_protected:'Эта папка защищена и не может быть изменена',
+    e_unsafe:'Системная область. Сначала включите в меню «Разрешить изменения в системных областях».', e_bad_name:'Недопустимое имя', e_bad_path:'Недопустимый путь',
+    e_into_self:'Нельзя копировать папку в саму себя', e_same_path:'Источник и назначение совпадают', e_bad_dest:'Назначение не является папкой',
+    e_bad_mode:'Недопустимые права', e_outside_root:'Вне разрешённой папки', e_unsupported:'Неподдерживаемый тип файла', e_generic:'Ошибка',
+    edit:'Правка', newFile:'Файл', find:'Поиск', findTitle:'Поиск файлов', findLabel:'Имя или маска (например *.txt) в текущей папке и ниже:', searchBtn:'Искать',
+    noResults:'Ничего не найдено', scannedN:'проверено объектов: {n}', truncNote:'Поиск остановлен досрочно: сузьте запрос или папку.', infoTitle:'Свойства', calcSize:'Посчитать размер',
+    maskSel:'Отметить по маске:', maskDesel:'Снять отметку по маске:', gotoLabel:'Перейти по пути:', go:'Перейти', logTitle:'Журнал', tooBig:'Файл больше 1 МБ: правка невозможна. Используйте скачивание.',
+    binaryNoEdit:'Похоже на двоичный файл; правка отключена.', saved:'Сохранено', unsavedQ:'Закрыть без сохранения?', save:'Сохранить', newFileName:'Имя нового файла:', exists:'Уже существует',
+    typeDir:'Папка', typeFile:'Файл', typeLink:'Символическая ссылка', typeOther:'Другое', fPath:'Путь', fType:'Тип', fSize:'Размер', fMode:'Права', fOwner:'Владелец', fTime:'Изменён', fTarget:'Цель ссылки',
+    objects:'объектов', total:'Всего', info:'Свойства',
+    helpTitle:'Клавиши',
+    helpBody:'Tab - сменить панель\nВверх/Вниз/PgUp/PgDn/Home/End - перемещение\nEnter - открыть папку / просмотреть файл\nBackspace - на уровень выше\nInsert или Пробел - отметить\n+ / - / * - отметить всё / снять / инвертировать\nF2 - обновить   F3 - просмотр   F4 - правка текста   Shift+F4 - новый файл\nF5 - копировать   F6 - перенести   Shift+F6 - переименовать   F7 - новая папка\nF8 или Delete - удалить   F9 - права\n+ / - отметить / снять по маске   * инвертировать   Ctrl+A всё\nCtrl+F или Alt+F7 - поиск файлов   Alt+Enter - свойства   Ctrl+G - перейти по пути\nF10 или Esc - меню\n\nПеретащите файлы с компьютера на панель, чтобы загрузить их.\nНа сенсорном экране: касание строки ставит курсор, повторное открывает, касание левой ячейки отмечает.'
+  }
+};
+let lang = 'en';
+try { const s = localStorage.getItem('fm_lang'); if (s && TR[s]) lang = s; else if ((navigator.language || '').toLowerCase().startsWith('ru')) lang = 'ru'; } catch (e) { if ((navigator.language || '').toLowerCase().startsWith('ru')) lang = 'ru'; }
+let theme = 'classic';
+try { const s = localStorage.getItem('fm_theme'); if (s === 'dark' || s === 'classic') theme = s; } catch (e) {}
+function t(k, p) {
+  let s = (TR[lang] && TR[lang][k]) ?? TR.en[k] ?? k;
+  if (p) for (const q in p) s = s.split('{' + q + '}').join(p[q]);
+  return s;
+}
+function errText(code) { return t('e_' + code) !== 'e_' + code ? t('e_' + code) : (code && /^E[A-Z0-9]+$/.test(code) ? code : t('e_generic') + (code ? ': ' + code : '')); }
+
+// ---------- вспомогательное ----------
+const $ = (s, r) => (r || document).querySelector(s);
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    if (k === 'class') e.className = attrs[k];
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), attrs[k]);
+    else if (attrs[k] === true) e.setAttribute(k, '');
+    else if (attrs[k] !== false && attrs[k] != null) e.setAttribute(k, attrs[k]);
+  }
+  for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2)) + ' ' + u[i];
+}
+function fmtDate(sec) {
+  if (!sec) return '';
+  const d = new Date(sec * 1000), p = x => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function fmtTime(s) { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); return m ? m + ':' + String(s % 60).padStart(2, '0') : s + ' s'; }
+function join(dir, name) { return dir === '/' ? '/' + name : dir + '/' + name; }
+function baseName(p) { const i = p.lastIndexOf('/'); return i < 0 ? p : p.slice(i + 1); }
+function parentOf(p) { const i = p.lastIndexOf('/'); return i <= 0 ? '/' : p.slice(0, i); }
+
+let unsafeMode = false;
+let busyUI = false;
+
+async function api(path, body, method) {
+  let r;
+  try {
+    const opts = body !== undefined ? { method: 'POST', headers: { 'X-Requested-With': 'ps4cmd', 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
+    r = await fetch(path, opts);
+  } catch (e) { setConn(false); throw Object.assign(new Error('noconn'), { code: 'noconn' }); }
+  setConn(true);
+  const txt = await r.text();
+  let j = null;
+  try { j = JSON.parse(txt); } catch (e) {}
+  if (!r.ok) throw Object.assign(new Error((j && j.error) || 'http' + r.status), { code: (j && j.error) || 'http' + r.status });
+  return j;
+}
+function setConn(ok) { $('#dot').classList.toggle('off', !ok); $('#dot').title = ok ? '' : t('noConn'); }
+let msgTimer = 0;
+function say(text, bad) {
+  const m = $('#msg');
+  m.textContent = text || '';
+  m.style.color = bad ? 'var(--warn)' : 'var(--sel)';
+  clearTimeout(msgTimer);
+  if (text) msgTimer = setTimeout(() => { m.textContent = ''; }, 6000);
+}
+
+// ---------- панели ----------
+const RH = 20;
+const panels = [];
+let active = 0;
+
+function makePanel(idx) {
+  const p = { idx, path: '/', entries: [], view: [], sel: new Set(), cur: 0, free: -1, total: -1, danger: 0, sort: 'name', desc: false, trunc: false, loaded: false };
+  p.el = h('div', { class: 'panel' });
+  p.head = h('div', { class: 'ph', onclick: () => { setActive(idx); showRoots(); } }, h('span'));
+  p.ch = h('div', { class: 'ch' },
+    h('div', { class: 'col-m' }),
+    h('div', { class: 'col-n', onclick: () => sortBy(p, 'name') }, t('name')),
+    h('div', { class: 'col-s', onclick: () => sortBy(p, 'size') }, t('size')),
+    h('div', { class: 'col-d', onclick: () => sortBy(p, 'date') }, t('date')),
+    h('div', { class: 'col-a' }, t('attr')));
+  p.list = h('div', { class: 'list', tabindex: '0' });
+  p.spacer = h('div', { class: 'spacer' });
+  p.list.append(p.spacer);
+  p.foot = h('div', { class: 'pf' }, h('span'), h('span'));
+  p.el.append(p.head, p.ch, p.list, p.foot);
+  p.list.addEventListener('scroll', () => render(p));
+  p.list.addEventListener('mousedown', () => setActive(idx));
+  p.list.addEventListener('click', e => onRowClick(p, e));
+  p.list.addEventListener('dblclick', e => { const i = rowIndexAt(p, e); if (i >= 0) { p.cur = i; openCur(p); } });
+  p.rows = new Map();
+  return p;
+}
+function setActive(i) {
+  active = i;
+  panels.forEach((p, k) => p.el.classList.toggle('active', k === i));
+  updateFoot(panels[i]);
+}
+function sortBy(p, key) {
+  if (p.sort === key) p.desc = !p.desc; else { p.sort = key; p.desc = false; }
+  rebuildView(p, null);
+}
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+function rebuildView(p, keepName) {
+  const dirs = [], files = [];
+  for (const e of p.entries) ((e.t === 'd' || e.td) ? dirs : files).push(e);
+  const cmp = (a, b) => {
+    let r = 0;
+    if (p.sort === 'size') r = a.s - b.s; else if (p.sort === 'date') r = a.m - b.m;
+    if (r === 0) r = collator.compare(a.n, b.n);
+    return p.desc ? -r : r;
+  };
+  dirs.sort(p.sort === 'name' ? cmp : (a, b) => collator.compare(a.n, b.n) * (p.desc ? -1 : 1));
+  files.sort(cmp);
+  p.view = (p.path === '/' ? [] : [{ up: true, n: '..', t: 'd' }]).concat(dirs, files);
+  const keep = keepName != null ? p.view.findIndex(e => e.n === keepName) : -1;
+  if (keep >= 0) p.cur = keep; else p.cur = Math.min(p.cur, Math.max(0, p.view.length - 1));
+  p.spacer.style.height = (p.view.length * RH) + 'px';
+  p.rows.forEach(r => r.remove());
+  p.rows.clear();
+  ensureVisible(p);
+  render(p);
+  updateFoot(p);
+}
+function render(p) {
+  const top = p.list.scrollTop, hgt = p.list.clientHeight || 400;
+  const a = Math.max(0, Math.floor(top / RH) - 2), b = Math.min(p.view.length, Math.ceil((top + hgt) / RH) + 2);
+  for (const [i, r] of p.rows) if (i < a || i >= b) { r.remove(); p.rows.delete(i); }
+  for (let i = a; i < b; i++) {
+    let r = p.rows.get(i);
+    const e = p.view[i];
+    if (!r) {
+      r = h('div', { class: 'row', 'data-i': i });
+      p.list.append(r);
+      p.rows.set(i, r);
+      r.style.top = (i * RH) + 'px';
+      r.append(h('div', { class: 'col-m' }), h('div', { class: 'col-n' }), h('div', { class: 'col-s' }), h('div', { class: 'col-d' }), h('div', { class: 'col-a' }));
+    }
+    const isDir = e.up || e.t === 'd' || e.td;
+    r.className = 'row' + (isDir ? ' dir' : '') + (e.t === 'l' ? ' link' : '') + (p.sel.has(e.n) && !e.up ? ' sel' : '') + (i === p.cur && p.idx === active ? ' cur' : (i === p.cur ? ' cur' : ''));
+    const c = r.children;
+    c[0].textContent = !e.up && p.sel.has(e.n) ? '*' : '';
+    c[1].textContent = (isDir && !e.up ? '/' : '') + e.n + (e.t === 'l' && e.l ? ' -> ' + e.l : '');
+    c[2].textContent = e.up ? (isDir ? t('dirTag') : '') : e.t === 'd' ? t('dirTag') : e.t === 'l' && e.td ? t('lnkTag') : e.t === 'f' ? fmtSize(e.s) : '';
+    c[3].textContent = e.up ? '' : fmtDate(e.m);
+    c[4].textContent = e.up ? '' : e.p;
+  }
+}
+function rowIndexAt(p, ev) {
+  const r = ev.target.closest('.row');
+  return r ? +r.dataset.i : -1;
+}
+let lastTap = { t: 0, i: -1, p: -1 };
+function onRowClick(p, ev) {
+  const i = rowIndexAt(p, ev);
+  if (i < 0) return;
+  setActive(p.idx);
+  const onMark = ev.target.closest('.col-m');
+  p.cur = i;
+  if (onMark) toggleSel(p, i, false);
+  else if (ev.pointerType === 'touch' || ev.detail === 0) {
+    const now = Date.now();
+    if (lastTap.i === i && lastTap.p === p.idx && now - lastTap.t < 450) { lastTap = { t: 0, i: -1, p: -1 }; openCur(p); return; }
+    lastTap = { t: now, i, p: p.idx };
+  }
+  render(p);
+  updateFoot(p);
+}
+function ensureVisible(p) {
+  const top = p.cur * RH, hgt = p.list.clientHeight || 400;
+  if (top < p.list.scrollTop) p.list.scrollTop = top;
+  else if (top + RH > p.list.scrollTop + hgt) p.list.scrollTop = top + RH - hgt;
+}
+function moveCur(p, d) {
+  p.cur = Math.max(0, Math.min(p.view.length - 1, p.cur + d));
+  ensureVisible(p);
+  render(p);
+  updateFoot(p);
+}
+function toggleSel(p, i, advance) {
+  const e = p.view[i];
+  if (!e || e.up) { if (advance) moveCur(p, 1); return; }
+  if (p.sel.has(e.n)) p.sel.delete(e.n); else p.sel.add(e.n);
+  if (advance) moveCur(p, 1); else { render(p); updateFoot(p); }
+}
+function updateFoot(p) {
+  const f = p.foot.children;
+  const items = p.view.filter(e => !e.up);
+  if (p.sel.size) {
+    let sz = 0;
+    for (const e of items) if (p.sel.has(e.n) && e.t === 'f') sz += e.s;
+    f[0].textContent = t('selected') + ': ' + p.sel.size + ' (' + fmtSize(sz) + ')';
+  } else {
+    const e = p.view[p.cur];
+    f[0].textContent = e && !e.up ? (e.t === 'f' ? fmtSize(e.s) : '') + '  ' + e.p + '  ' + e.u + ':' + e.g : items.length + ' ' + t('items');
+  }
+  f[1].textContent = p.free >= 0 ? fmtSize(p.free) + ' ' + t('free') + (p.total > 0 ? ' ' + t('of') + ' ' + fmtSize(p.total) : '') : '';
+  p.head.firstChild.textContent = p.path;
+  p.head.title = p.path;
+  p.el.classList.toggle('danger1', p.danger === 1);
+}
+async function load(p, path, keepName) {
+  try {
+    const j = await api('/api/ls?path=' + encodeURIComponent(path));
+    p.path = j.path; p.entries = j.entries; p.free = j.free; p.total = j.total; p.danger = j.danger; p.trunc = j.trunc;
+    p.sel = new Set();
+    p.loaded = true;
+    rebuildView(p, keepName);
+    p.list.scrollTop = keepName ? p.list.scrollTop : 0;
+    if (keepName == null) { p.cur = 0; p.list.scrollTop = 0; render(p); }
+    ensureVisible(p);
+    render(p);
+    updateFoot(p);
+    return true;
+  } catch (e) {
+    if (e.code !== 'noconn') say(t('openedErr') + ' ' + path + ': ' + errText(e.code), true);
+    return false;
+  }
+}
+async function openCur(p) {
+  const e = p.view[p.cur];
+  if (!e) return;
+  if (e.up) { const from = baseName(p.path); await load(p, parentOf(p.path), from); return; }
+  if (e.t === 'd' || e.td) { await load(p, join(p.path, e.n), e.n === '..' ? baseName(p.path) : null); return; }
+  if (e.t === 'f') viewFile(p, e);
+}
+function goUp(p) { if (p.path !== '/') load(p, parentOf(p.path), baseName(p.path)); }
+function refreshAll() { return Promise.all(panels.map(p => load(p, p.path, (p.view[p.cur] || {}).n))); }
+function targets(p) {
+  if (p.sel.size) return p.view.filter(e => !e.up && p.sel.has(e.n));
+  const e = p.view[p.cur];
+  return e && !e.up ? [e] : [];
+}
+
+// ---------- диалоги ----------
+const overlay = $('#overlay');
+let dlgClose = null;
+function openDlg(node, onClose) {
+  closeDlg();
+  overlay.replaceChildren(node);
+  overlay.classList.add('on');
+  dlgClose = onClose || null;
+  const first = node.querySelector('input[type=text]') || node.querySelector('button.primary');
+  if (first) { first.focus(); if (first.select) first.select(); }
+}
+function closeDlg() {
+  overlay.classList.remove('on');
+  overlay.replaceChildren();
+  const c = dlgClose; dlgClose = null;
+  if (c) c();
+}
+function dlgOpen() { return overlay.classList.contains('on'); }
+function dialog(title, bodyNodes, buttons, cls) {
+  const bt = h('div', { class: 'btns' }, buttons.map(b => h('button', { class: (b.primary ? 'primary ' : '') + (b.bad ? 'bad' : ''), onclick: b.fn }, b.label)));
+  const d = h('div', { class: 'dlg ' + (cls || '') }, title ? h('h3', null, title) : null, h('div', { class: 'body' }, bodyNodes), bt);
+  openDlg(d);
+  return d;
+}
+function messageBox(text, bad) {
+  dialog(null, [text], [{ label: t('ok'), primary: true, fn: closeDlg }], bad ? 'err' : '');
+}
+function askInput(title, label, value, opts, cb) {
+  opts = opts || {};
+  const inp = h('input', { type: 'text', value: value || '', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off' });
+  const cbs = (opts.checks || []).map(c => ({ c, el: h('input', { type: 'checkbox' }) }));
+  const go = () => { const v = inp.value; const flags = {}; cbs.forEach(x => flags[x.c.key] = x.el.checked); closeDlg(); cb(v, flags); };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); go(); } });
+  const body = [h('div', null, label), inp, ...cbs.map(x => h('label', null, x.el, x.c.label))];
+  if (opts.warn) body.push(h('div', { class: 'kv', style: 'color:#a00' }, opts.warn));
+  dialog(title, body, [{ label: opts.okLabel || t('ok'), primary: true, fn: go }, { label: t('cancel'), fn: closeDlg }], opts.cls);
+  inp.focus(); inp.select();
+}
+function confirmBox(title, text, okLabel, cb, bad) {
+  const d = dialog(title, [text], [{ label: okLabel, primary: true, bad, fn: () => { closeDlg(); cb(); } }, { label: t('cancel'), fn: closeDlg }], bad ? 'err' : '');
+  return d;
+}
+
+// ---------- задания ----------
+let pollTimer = 0;
+async function runJob(spec, titleKey) {
+  spec.unsafe = unsafeMode;
+  try { await api('/api/job/start', spec); }
+  catch (e) { messageBox(errText(e.code), true); return; }
+  showJob(titleKey);
+}
+function showJob(titleKey) {
+  const bar = h('i'), cur = h('div', { class: 'kv' }), stat = h('div'), state = h('div');
+  const cancel = h('button', { class: 'bad', onclick: () => api('/api/job/cancel', {}).catch(() => {}) }, t('cancel'));
+  const d = h('div', { class: 'dlg' }, h('h3', null, t(titleKey)), h('div', { class: 'bar' }, bar), state, stat, cur, h('div', { class: 'btns' }, cancel));
+  openDlg(d, () => clearTimeout(pollTimer));
+  const tick = async () => {
+    let j;
+    try { j = await api('/api/job'); } catch (e) { pollTimer = setTimeout(tick, 1000); return; }
+    const pct = j.total > 0 ? Math.min(100, 100 * j.done / j.total) : (j.files_total > 0 ? 100 * j.files_done / j.files_total : 0);
+    bar.style.width = pct.toFixed(1) + '%';
+    state.textContent = j.state === 'scan' ? t('scanning') : pct.toFixed(0) + '%';
+    stat.textContent = j.files_done + ' / ' + j.files_total + ' ' + t('files') + (j.total > 0 ? '   ' + fmtSize(j.done) + ' / ' + fmtSize(j.total) : '') +
+      '\n' + t('elapsed') + ': ' + fmtTime(j.secs) + (j.secs > 1 && j.done > 0 ? '   ' + t('speed') + ': ' + fmtSize(j.done / j.secs) + '/s' : '');
+    stat.style.whiteSpace = 'pre';
+    cur.textContent = j.cur;
+    if (j.state === 'scan' || j.state === 'running') { pollTimer = setTimeout(tick, 400); return; }
+    closeDlg();
+    await refreshAll();
+    if (j.err_total > 0) {
+      const lines = j.errors.map(x => x.p + '\n    ' + errText(x.e));
+      if (j.err_total > j.errors.length) lines.push('... +' + (j.err_total - j.errors.length));
+      dialog((j.state === 'cancelled' ? t('cancelled') + ': ' : '') + t('errorsTitle') + ' (' + j.err_total + ')', [lines.join('\n')], [{ label: t('ok'), primary: true, fn: closeDlg }], 'err wide');
+    } else if (j.state === 'cancelled') say(t('cancelled'));
+    else say(t('done'));
+  };
+  tick();
+}
+
+// ---------- действия ----------
+function other() { return panels[1 - active]; }
+function doCopyMove(move) {
+  const p = panels[active], q = other(), ts = targets(p);
+  if (!ts.length) return;
+  const n = ts.length === 1 ? '"' + ts[0].n + '"' : ts.length + ' ' + t('items');
+  askInput(t(move ? 'move' : 'copy'), t(move ? 'moveTo' : 'copyTo', { n }), q.path, { checks: [{ key: 'overwrite', label: t('overwrite') }] }, (dest, f) => {
+    runJob({ op: move ? 'move' : 'copy', paths: ts.map(e => join(p.path, e.n)), dest, overwrite: !!f.overwrite }, move ? 'opMove' : 'opCopy');
+  });
+}
+function doDelete() {
+  const p = panels[active], ts = targets(p);
+  if (!ts.length) return;
+  const txt = ts.length === 1 ? t('delOne', { n: ts[0].n }) : t('delMany', { n: ts.length });
+  const names = ts.slice(0, 12).map(e => '  ' + (e.t === 'd' ? '/' : '') + e.n).join('\n') + (ts.length > 12 ? '\n  ...' : '');
+  confirmBox(t('del'), txt + '\n' + (ts.length > 1 ? names + '\n' : '') + t('delWarn'), t('del'), () => {
+    runJob({ op: 'delete', paths: ts.map(e => join(p.path, e.n)) }, 'opDelete');
+  }, true);
+}
+function doMkdir() {
+  const p = panels[active];
+  askInput(t('mkdir'), t('newFolder'), '', null, async name => {
+    name = name.trim();
+    if (!name) return;
+    try { await api('/api/mkdir', { path: join(p.path, name), unsafe: unsafeMode }); await refreshAll(); const i = p.view.findIndex(e => e.n === name); if (i >= 0) { p.cur = i; ensureVisible(p); render(p); } }
+    catch (e) { messageBox(errText(e.code), true); }
+  });
+}
+function doRename() {
+  const p = panels[active], e = p.view[p.cur];
+  if (!e || e.up) return;
+  askInput(t('rename'), t('newName'), e.n, null, async name => {
+    name = name.trim();
+    if (!name || name === e.n) return;
+    try { await api('/api/rename', { path: join(p.path, e.n), to: join(p.path, name), unsafe: unsafeMode }); p.sel.delete(e.n); await load(p, p.path, name); }
+    catch (er) { messageBox(errText(er.code), true); }
+  });
+}
+function doChmod() {
+  const p = panels[active], ts = targets(p);
+  if (!ts.length) return;
+  askInput(t('chmod'), t('modeOct'), ts.length === 1 ? ts[0].p : '755', { checks: [{ key: 'recursive', label: t('recursive') }] }, (mode, f) => {
+    runJob({ op: 'chmod', paths: ts.map(e => join(p.path, e.n)), mode: mode.trim(), recursive: !!f.recursive }, 'opChmod');
+  });
+}
+function doDownload() {
+  const p = panels[active], e = p.view[p.cur];
+  if (!e || e.t !== 'f') return;
+  const a = h('a', { href: '/api/download?path=' + encodeURIComponent(join(p.path, e.n)), download: e.n });
+  document.body.append(a); a.click(); a.remove();
+}
+function doUpload() { $('#file').value = ''; $('#file').click(); }
+$('#file').addEventListener('change', ev => uploadFiles(panels[active], Array.from(ev.target.files || [])));
+async function uploadFiles(p, files) {
+  if (!files.length) return;
+  const bar = h('i'), info = h('div');
+  openDlg(h('div', { class: 'dlg' }, h('h3', null, t('uploading')), h('div', { class: 'bar' }, bar), info));
+  let okN = 0;
+  for (let k = 0; k < files.length; k++) {
+    const f = files[k];
+    info.textContent = (k + 1) + '/' + files.length + '  ' + f.name + '  (' + fmtSize(f.size) + ')';
+    try {
+      await putFile(join(p.path, f.name), f, false, pr => { bar.style.width = (100 * pr).toFixed(1) + '%'; });
+      okN++;
+    } catch (e) { closeDlg(); messageBox(f.name + '\n' + errText(e.code), true); await load(p, p.path, null); return; }
+  }
+  closeDlg();
+  say(t('uploadDone', { n: okN }));
+  await load(p, p.path, null);
+}
+function putFile(path, body, overwrite, onprog) {
+  return new Promise((res, rej) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/upload?path=' + encodeURIComponent(path) + (overwrite ? '&overwrite=1' : '') + (unsafeMode ? '&unsafe=1' : ''));
+    x.setRequestHeader('X-Requested-With', 'ps4cmd');
+    if (onprog) x.upload.onprogress = e => { if (e.lengthComputable) onprog(e.loaded / Math.max(1, e.total)); };
+    x.onload = () => { if (x.status === 200) res(); else { let c = 'http' + x.status; try { c = JSON.parse(x.responseText).error || c; } catch (e) {} rej(Object.assign(new Error(c), { code: c })); } };
+    x.onerror = () => rej(Object.assign(new Error('noconn'), { code: 'noconn' }));
+    x.send(body);
+  });
+}
+function setupDrop() {
+  panels.forEach(p => {
+    p.el.addEventListener('dragover', e => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) { e.preventDefault(); p.el.style.outline = '2px dashed var(--sel)'; } });
+    p.el.addEventListener('dragleave', () => { p.el.style.outline = ''; });
+    p.el.addEventListener('drop', e => { e.preventDefault(); p.el.style.outline = ''; if (dlgOpen()) return; setActive(p.idx); uploadFiles(p, Array.from((e.dataTransfer && e.dataTransfer.files) || [])); });
+  });
+}
+
+// ---------- выбор по маске ----------
+function globToRe(mask) {
+  const re = mask.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp('^' + re + '$', 'i');
+}
+function selectByMask(add) {
+  const p = panels[active];
+  askInput(add ? '+' : '-', t(add ? 'maskSel' : 'maskDesel'), '*', null, mask => {
+    mask = mask.trim();
+    if (!mask) return;
+    let re;
+    try { re = globToRe(mask); } catch (e) { return; }
+    p.view.forEach(e => { if (!e.up && re.test(e.n)) { if (add) p.sel.add(e.n); else p.sel.delete(e.n); } });
+    render(p); updateFoot(p);
+  });
+}
+
+// ---------- свойства ----------
+function modeStr(e) {
+  const m = parseInt(e.p, 8);
+  let o = e.t === 'd' ? 'd' : e.t === 'l' ? 'l' : '-';
+  for (let i = 2; i >= 0; i--) { const b = (m >> (i * 3)) & 7; o += (b & 4 ? 'r' : '-') + (b & 2 ? 'w' : '-') + (b & 1 ? 'x' : '-'); }
+  return o;
+}
+function showInfo() {
+  const p = panels[active], e = p.view[p.cur];
+  if (!e || e.up) return;
+  const full = join(p.path, e.n);
+  const rows = [
+    [t('fPath'), full],
+    [t('fType'), t(e.t === 'd' ? 'typeDir' : e.t === 'f' ? 'typeFile' : e.t === 'l' ? 'typeLink' : 'typeOther')],
+    [t('fSize'), e.t === 'f' ? fmtSize(e.s) + ' (' + e.s + ' B)' : ''],
+    [t('fMode'), e.p + '  ' + modeStr(e)],
+    [t('fOwner'), e.u + ':' + e.g],
+    [t('fTime'), fmtDate(e.m)]
+  ];
+  if (e.l) rows.push([t('fTarget'), e.l]);
+  const body = h('div', { style: 'white-space:pre-wrap;word-break:break-all' }, rows.filter(r => r[1] !== '').map(r => r[0] + ': ' + r[1]).join('\n'));
+  const btns = [];
+  if (e.t === 'd' || e.td) btns.push({ label: t('calcSize'), fn: async () => {
+    closeDlg();
+    try { await api('/api/job/start', { op: 'size', paths: [full] }); } catch (er) { messageBox(errText(er.code), true); return; }
+    showSizeJob(e.n);
+  } });
+  btns.push({ label: t('close'), primary: true, fn: closeDlg });
+  dialog(t('infoTitle') + ': ' + e.n, [body], btns);
+}
+function showSizeJob(name) {
+  const st = h('pre', { style: 'margin:0' });
+  const d = dialog(t('calcSize') + ': ' + name, [st], [{ label: t('cancel'), fn: () => { api('/api/job/cancel', {}).catch(() => {}); closeDlg(); } }]);
+  dlgClose = () => clearTimeout(pollTimer);
+  const tick = async () => {
+    let j;
+    try { j = await api('/api/job'); } catch (e) { pollTimer = setTimeout(tick, 1000); return; }
+    st.textContent = j.files_total + ' ' + t('objects') + '\n' + t('total') + ': ' + fmtSize(j.total) + ' (' + j.total + ' B)';
+    if (j.state === 'scan' || j.state === 'running') { pollTimer = setTimeout(tick, 400); return; }
+    const b = d.querySelector('.btns');
+    if (b) b.replaceChildren(h('button', { class: 'primary', onclick: closeDlg }, t('close')));
+  };
+  tick();
+}
+
+// ---------- поиск ----------
+function showFind() {
+  const p = panels[active];
+  const inp = h('input', { type: 'text', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off' });
+  const res = h('div', { style: 'max-height:50vh;overflow:auto;display:flex;flex-direction:column;gap:2px' });
+  const note = h('div', { class: 'kv', style: 'color:inherit' });
+  const run = async () => {
+    const q = inp.value.trim();
+    if (!q) return;
+    res.replaceChildren(h('div', null, t('loading')));
+    note.textContent = '';
+    try {
+      const j = await api('/api/find?path=' + encodeURIComponent(p.path) + '&q=' + encodeURIComponent(q));
+      res.replaceChildren();
+      if (!j.results.length) res.append(h('div', null, t('noResults')));
+      for (const r of j.results) {
+        res.append(h('button', { style: 'text-align:left;background:transparent;border:0;color:inherit;padding:1px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: r.p, onclick: async () => {
+          closeDlg();
+          const dir = r.t === 'd' ? r.p : parentOf(r.p);
+          await load(p, dir, null);
+          if (r.t !== 'd') { const i = p.view.findIndex(x => x.n === baseName(r.p)); if (i >= 0) { p.cur = i; ensureVisible(p); render(p); updateFoot(p); } }
+        } }, (r.t === 'd' ? '/' : '') + r.p + (r.t === 'f' ? '  (' + fmtSize(r.s) + ')' : '')));
+      }
+      note.textContent = t('scannedN', { n: j.scanned }) + (j.trunc ? '. ' + t('truncNote') : '');
+    } catch (e) { res.replaceChildren(h('div', null, errText(e.code))); }
+  };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); run(); } });
+  dialog(t('findTitle'), [h('div', null, t('findLabel')), inp, res, note], [{ label: t('searchBtn'), primary: true, fn: run }, { label: t('close'), fn: closeDlg }], 'wide');
+  inp.focus();
+}
+
+// ---------- редактор текста ----------
+async function editFile(p, e, createNew) {
+  const path = join(p.path, e.n);
+  let text = '', crlf = false;
+  if (!createNew) {
+    if (e.t !== 'f') return;
+    if (e.s > 1048576) { messageBox(t('tooBig'), true); return; }
+    try {
+      const r = await fetch('/api/view?path=' + encodeURIComponent(path) + '&off=0&len=1048576');
+      if (!r.ok) { let c = 'http' + r.status; try { c = (await r.json()).error || c; } catch (x) {} throw Object.assign(new Error(c), { code: c }); }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      for (let i = 0; i < Math.min(buf.length, 8192); i++) if (buf[i] === 0) { messageBox(t('binaryNoEdit'), true); return; }
+      text = new TextDecoder('utf-8').decode(buf);
+    } catch (er) { messageBox(errText(er.code), true); return; }
+    crlf = text.includes('\r\n');
+  }
+  const ta = h('textarea', { class: 'viewer', spellcheck: 'false', style: 'resize:none;white-space:pre;overflow:auto;width:100%;font:inherit;font-size:13px;line-height:17px;border:0;outline:0' });
+  ta.value = crlf ? text.replace(/\r\n/g, '\n') : text;
+  const st = h('div', { class: 'kv' }, fmtSize(new Blob([text]).size));
+  let dirty = false;
+  ta.addEventListener('input', () => { dirty = true; st.textContent = '*'; });
+  const save = async () => {
+    const body = crlf ? ta.value.replace(/\n/g, '\r\n') : ta.value;
+    try { await putFile(path, new Blob([body]), !createNew || dirty, null); dirty = false; createNew = false; st.textContent = t('saved') + ' (' + fmtSize(new Blob([body]).size) + ')'; await load(p, p.path, e.n); }
+    catch (er) { messageBox(errText(er.code), true); }
+  };
+  const close = () => { if (dirty) confirmBox(t('edit'), t('unsavedQ'), t('close'), closeDlg, true); else closeDlg(); };
+  const d = h('div', { class: 'dlg wide' }, h('h3', null, e.n), st, ta, h('div', { class: 'btns' },
+    h('button', { class: 'primary', onclick: save }, t('save') + ' (Ctrl+S)'), h('button', { onclick: close }, t('close'))));
+  openDlg(d);
+  ta.focus();
+  d.addEventListener('keydown', ev => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') { ev.preventDefault(); save(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); }
+    else if (ev.key === 'Tab') { ev.preventDefault(); const a = ta.selectionStart; ta.setRangeText('\t', a, ta.selectionEnd, 'end'); dirty = true; st.textContent = '*'; }
+  });
+}
+function doEdit() { const p = panels[active], e = p.view[p.cur]; if (e && !e.up) editFile(p, e, false); }
+function doNewFile() {
+  const p = panels[active];
+  askInput(t('newFile'), t('newFileName'), '', null, name => {
+    name = name.trim();
+    if (!name) return;
+    if (p.entries.some(x => x.n === name)) { messageBox(t('exists'), true); return; }
+    editFile(p, { n: name, t: 'f', s: 0 }, true);
+  });
+}
+
+// ---------- переход по пути и журнал ----------
+function gotoPath(p) {
+  askInput(t('roots'), t('gotoLabel'), p.path, { okLabel: t('go') }, v => { v = v.trim(); if (v) load(p, v.startsWith('/') ? v : join(p.path, v), null); });
+}
+async function showLog() {
+  let txt = '';
+  try { txt = await (await fetch('/api/log?n=16384')).text(); } catch (e) { return; }
+  dialog(t('logTitle'), [h('pre', { class: 'viewer', style: 'min-height:50vh' }, txt)], [{ label: t('close'), primary: true, fn: closeDlg }], 'wide');
+}
+
+// ---------- просмотр файла ----------
+async function viewFile(p, e) {
+  const path = join(p.path, e.n);
+  const CH = 256 * 1024;
+  let off = 0, mode = 'auto', size = e.s;
+  const pre = h('pre', { class: 'viewer' }), info = h('div', { class: 'kv' });
+  const ext = (e.n.split('.').pop() || '').toLowerCase();
+  const media = ['png','jpg','jpeg','gif','webp','bmp'].includes(ext) ? 'img' : ['mp3','ogg','wav'].includes(ext) ? 'audio' : ['mp4','m4v','webm'].includes(ext) ? 'video' : '';
+  const src = '/api/download?inline=1&path=' + encodeURIComponent(path);
+  const bText = h('button', { onclick: () => { mode = 'text'; load1(); } }, t('viewText'));
+  const bHex = h('button', { onclick: () => { mode = 'hex'; load1(); } }, t('viewHex'));
+  const bPrev = h('button', { onclick: () => { off = Math.max(0, off - CH); load1(); } }, t('prev'));
+  const bNext = h('button', { onclick: () => { if (off + CH < size) { off += CH; load1(); } } }, t('next'));
+  const bDl = h('button', { onclick: doDownload }, t('download'));
+  const bClose = h('button', { class: 'primary', onclick: closeDlg }, t('close'));
+  const d = h('div', { class: 'dlg wide' }, h('h3', null, e.n), info, pre, h('div', { class: 'btns' }, bText, bHex, bPrev, bNext, bDl, bClose));
+  openDlg(d);
+  if (media) {
+    pre.replaceChildren(media === 'img' ? h('img', { src, style: 'max-width:100%;max-height:100%;display:block;margin:auto' })
+      : h(media, { src, controls: true, style: 'max-width:100%;max-height:100%;display:block;margin:auto' }));
+    pre.style.display = 'flex'; pre.style.alignItems = 'center'; pre.style.whiteSpace = 'normal';
+    info.textContent = fmtSize(e.s);
+    bPrev.style.display = bNext.style.display = 'none';
+  } else load1();
+  async function load1() {
+    pre.textContent = t('loading');
+    try {
+      const r = await fetch('/api/view?path=' + encodeURIComponent(path) + '&off=' + off + '&len=' + CH);
+      if (!r.ok) { let c = 'http' + r.status; try { c = (await r.json()).error || c; } catch (x) {} throw Object.assign(new Error(c), { code: c }); }
+      size = +r.headers.get('X-File-Size') || size;
+      const buf = new Uint8Array(await r.arrayBuffer());
+      let bin = false;
+      for (let i = 0; i < Math.min(buf.length, 4096); i++) if (buf[i] === 0) { bin = true; break; }
+      const m = mode === 'auto' ? (bin ? 'hex' : 'text') : mode;
+      if (m === 'hex') {
+        const lines = [];
+        for (let i = 0; i < buf.length; i += 16) {
+          let hx = '', as = '';
+          for (let k = 0; k < 16; k++) {
+            if (i + k < buf.length) { const b = buf[i + k]; hx += b.toString(16).padStart(2, '0') + ' '; as += b >= 32 && b < 127 ? String.fromCharCode(b) : '.'; } else hx += '   ';
+            if (k === 7) hx += ' ';
+          }
+          lines.push((off + i).toString(16).padStart(8, '0') + '  ' + hx + ' ' + as);
+        }
+        pre.textContent = lines.join('\n');
+      } else {
+        pre.textContent = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      }
+      pre.style.display = ''; pre.style.whiteSpace = 'pre';
+      info.textContent = fmtSize(size) + '   ' + off + '..' + (off + buf.length) + ' (' + m + ')';
+      bPrev.disabled = off === 0; bNext.disabled = off + CH >= size;
+    } catch (er) { pre.textContent = errText(er.code); }
+  }
+}
+
+// ---------- переходы, меню, справка ----------
+async function showRoots() {
+  let j;
+  try { j = await api('/api/roots'); } catch (e) { return; }
+  const p = panels[active];
+  const list = j.roots.map(r => h('button', { onclick: () => { closeDlg(); load(p, r.p, null); } }, r.p));
+  const d = h('div', { class: 'dlg' }, h('h3', null, t('rootsTitle')), h('div', { class: 'btns' }, list), h('div', { class: 'btns' }, h('button', { onclick: () => { closeDlg(); gotoPath(p); } }, t('gotoLabel').replace(/:$/, '...')), h('button', { class: 'primary', onclick: closeDlg }, t('cancel'))));
+  openDlg(d);
+}
+function showMenu() {
+  const body = [];
+  const unsafeCb = h('input', { type: 'checkbox' });
+  unsafeCb.checked = unsafeMode;
+  unsafeCb.addEventListener('change', () => { setUnsafe(unsafeCb.checked); });
+  const themeSel = h('select', null, h('option', { value: 'classic' }, t('themeClassic')), h('option', { value: 'dark' }, t('themeDark')));
+  themeSel.value = theme;
+  themeSel.addEventListener('change', () => { theme = themeSel.value; applyTheme(); try { localStorage.setItem('fm_theme', theme); } catch (e) {} });
+  const langSel = h('select', null, h('option', { value: 'en' }, 'English'), h('option', { value: 'ru' }, 'Русский'));
+  langSel.value = lang;
+  langSel.addEventListener('change', () => { lang = langSel.value; try { localStorage.setItem('fm_lang', lang); } catch (e) {} closeDlg(); rebuildUI(); });
+  body.push(h('label', null, unsafeCb, t('unsafeBtn')), h('div', { class: 'kv', style: 'color:#600' }, t('unsafeWarn')),
+    h('label', null, t('theme') + ':', themeSel), h('label', null, t('lang') + ':', langSel));
+  const act = fn => () => { closeDlg(); fn(); };
+  const mb = (label, fn, cls) => h('button', { class: cls || '', onclick: act(fn) }, label);
+  body.push(h('div', { class: 'btns' },
+    mb(t('find') + ' (Ctrl+F)', showFind), mb(t('infoTitle') + ' (Alt+Enter)', showInfo), mb(t('newFile') + ' (Shift+F4)', doNewFile),
+    mb(t('rename') + ' (Shift+F6)', doRename), mb(t('upload'), doUpload), mb(t('download'), doDownload),
+    mb(t('roots') + ' (Ctrl+G)', () => gotoPath(panels[active])), mb(t('logTitle'), showLog), mb(t('help'), showHelp)));
+  dialog(t('menu'), body, [
+    { label: t('quit'), bad: true, fn: () => confirmBox(t('quit'), t('quitQ'), t('quit'), doQuit, true) },
+    { label: t('close'), primary: true, fn: closeDlg }]);
+}
+function setUnsafe(v) {
+  unsafeMode = v;
+  document.body.classList.toggle('unsafe', v);
+  $('#unsafeTag').textContent = v ? t('unsafeOn') : '';
+}
+function showHelp() { dialog(t('helpTitle'), [t('helpBody')], [{ label: t('close'), primary: true, fn: closeDlg }]); }
+async function doQuit() {
+  try { await api('/quit', {}); } catch (e) {}
+  dialog(null, [t('bye')], []);
+}
+function applyTheme() { document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'classic'); }
+
+// ---------- нижняя строка клавиш ----------
+const KEYS = [
+  ['1', 'help', showHelp], ['2', 'refresh', () => refreshAll()], ['3', 'view', () => { const p = panels[active]; const e = p.view[p.cur]; if (e && e.t === 'f') viewFile(p, e); }],
+  ['4', 'edit', doEdit], ['5', 'copy', () => doCopyMove(false)], ['6', 'move', () => doCopyMove(true)], ['7', 'mkdir', doMkdir],
+  ['8', 'del', doDelete], ['9', 'chmod', doChmod], ['10', 'menu', showMenu]
+];
+function buildKeys() {
+  const k = $('#keys');
+  k.replaceChildren(...KEYS.map(([n, key, fn]) => h('button', { onclick: () => { if (!dlgOpen()) fn(); } }, h('i', null, n), t(key))));
+  if (matchMedia('(max-width:760px)').matches) {
+    k.append(h('button', { onclick: () => { if (!dlgOpen()) toggleSel(panels[active], panels[active].cur, true); } }, h('i', null, '+'), t('select')),
+      h('button', { onclick: () => { if (!dlgOpen()) setActive(1 - active); } }, h('i', null, '⇄'), t('swap')),
+      h('button', { onclick: () => { if (!dlgOpen()) doUpload(); } }, h('i', null, '↑'), t('upload')),
+      h('button', { onclick: () => { if (!dlgOpen()) doDownload(); } }, h('i', null, '↓'), t('download')),
+      h('button', { onclick: () => { if (!dlgOpen()) showRoots(); } }, h('i', null, '/'), t('roots')),
+      h('button', { onclick: () => { if (!dlgOpen()) showFind(); } }, h('i', null, '?'), t('find')),
+      h('button', { onclick: () => { if (!dlgOpen()) doRename(); } }, h('i', null, 'R'), t('rename')));
+  }
+}
+function rebuildUI() {
+  document.documentElement.lang = lang;
+  buildKeys();
+  $('#btnMenu').textContent = t('menu') + ' (F10)';
+  $('#unsafeTag').textContent = unsafeMode ? t('unsafeOn') : '';
+  panels.forEach(p => {
+    p.ch.children[1].textContent = t('name'); p.ch.children[2].textContent = t('size');
+    p.ch.children[3].textContent = t('date'); p.ch.children[4].textContent = t('attr');
+    render(p); updateFoot(p);
+  });
+}
+$('#btnMenu').addEventListener('click', () => { if (!dlgOpen()) showMenu(); });
+
+// ---------- клавиатура ----------
+document.addEventListener('keydown', ev => {
+  if (dlgOpen()) {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeDlg(); }
+    else if (ev.key === 'Enter' && ev.target.tagName !== 'INPUT' && ev.target.tagName !== 'BUTTON' && ev.target.tagName !== 'SELECT') {
+      const b = overlay.querySelector('button.primary'); if (b) { ev.preventDefault(); b.click(); }
+    }
+    return;
+  }
+  const p = panels[active];
+  const fk = /^F\d+$/.test(ev.key);
+  let handled = true;
+  switch (ev.key) {
+    case 'ArrowUp': moveCur(p, -1); break;
+    case 'ArrowDown': moveCur(p, 1); break;
+    case 'PageUp': moveCur(p, -Math.max(1, Math.floor(p.list.clientHeight / RH) - 1)); break;
+    case 'PageDown': moveCur(p, Math.max(1, Math.floor(p.list.clientHeight / RH) - 1)); break;
+    case 'Home': moveCur(p, -1e9); break;
+    case 'End': moveCur(p, 1e9); break;
+    case 'Enter': if (ev.altKey) showInfo(); else openCur(p); break;
+    case 'Backspace': goUp(p); break;
+    case 'Tab': setActive(1 - active); break;
+    case 'Insert': toggleSel(p, p.cur, true); break;
+    case ' ': toggleSel(p, p.cur, true); break;
+    case '+': selectByMask(true); break;
+    case '-': selectByMask(false); break;
+    case '*': p.view.forEach(e => { if (!e.up) { if (p.sel.has(e.n)) p.sel.delete(e.n); else p.sel.add(e.n); } }); render(p); updateFoot(p); break;
+    case 'Delete': doDelete(); break;
+    case 'a': case 'A': if (ev.ctrlKey || ev.metaKey) { p.view.forEach(e => { if (!e.up) p.sel.add(e.n); }); render(p); updateFoot(p); } else handled = false; break;
+    case 'f': case 'F': if (ev.ctrlKey || ev.metaKey) showFind(); else handled = false; break;
+    case 'g': case 'G': if (ev.ctrlKey || ev.metaKey) gotoPath(p); else handled = false; break;
+    case 'Escape': showMenu(); break;
+    case 'F1': showHelp(); break;
+    case 'F2': refreshAll(); break;
+    case 'F3': { const e = p.view[p.cur]; if (e && e.t === 'f') viewFile(p, e); break; }
+    case 'F4': if (ev.shiftKey) doNewFile(); else doEdit(); break;
+    case 'F5': doCopyMove(false); break;
+    case 'F6': if (ev.shiftKey) doRename(); else doCopyMove(true); break;
+    case 'F7': if (ev.altKey) showFind(); else doMkdir(); break;
+    case 'F8': doDelete(); break;
+    case 'F9': doChmod(); break;
+    case 'F10': showMenu(); break;
+    default: handled = false;
+  }
+  if (handled || fk) ev.preventDefault();
+});
+window.addEventListener('resize', () => panels.forEach(p => { render(p); }));
+
+// ---------- запуск ----------
+async function init() {
+  applyTheme();
+  const pn = $('#panels');
+  panels.push(makePanel(0), makePanel(1));
+  pn.append(panels[0].el, panels[1].el);
+  rebuildUI();
+  setupDrop();
+  setActive(0);
+  let roots = ['/'];
+  try {
+    const j = await api('/api/roots');
+    roots = j.roots.map(r => r.p);
+    if (j.version) $('#ver').textContent = j.version;
+  } catch (e) { say(t('noConn'), true); }
+  const first = roots.includes('/data') ? '/data' : roots[0];
+  await load(panels[0], first, null);
+  await load(panels[1], roots.includes('/') ? '/' : roots[0], null);
+  panels[0].list.focus();
+}
+init();
+</script>
+</body>
+</html>
