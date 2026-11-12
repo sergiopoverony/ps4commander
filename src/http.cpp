@@ -456,7 +456,7 @@ static void handle(int fd) {
     std::string range_hdr;
     { size_t rp = lower.find("\r\nrange:"); if (rp != std::string::npos) { size_t e2 = lower.find("\r\n", rp + 2); std::string v = lower.substr(rp + 8, e2 == std::string::npos ? std::string::npos : e2 - rp - 8); size_t b2 = v.find_first_not_of(" \t"); range_hdr = b2 == std::string::npos ? "" : v.substr(b2); while (!range_hdr.empty() && (range_hdr.back() == ' ' || range_hdr.back() == '\t')) range_hdr.pop_back(); } }
     bool is_head = method == "HEAD";
-    if (is_head && path != "/api/download") { respond_err(fd, 405, "method"); close(fd); return; }
+    if (is_head && path != "/api/download" && path.compare(0, 3, "/p/") != 0) { respond_err(fd, 405, "method"); close(fd); return; }
     if (method == "GET" || is_head) {
         std::string err;
         if (path == "/" || path == "/index.html")
@@ -483,6 +483,11 @@ static void handle(int fd) {
                     send_all(fd, data.data(), data.size());
                 } else respond_err(fd, err_status(err), err);
             }
+        } else if (path.compare(0, 3, "/p/") == 0) {
+            // короткий адрес pkg из очереди установки: только пока он ждёт установки или ставится
+            std::string real;
+            if (!install_path_for_token(path.substr(3), real)) respond_err(fd, 404, "not_found");
+            else do_download(fd, real, false, range_hdr, is_head);
         } else if (path == "/api/download") {
             std::string n = path_param(query, err);
             if (n.empty()) respond_err(fd, 400, err); else do_download(fd, n, qget(query, "inline") == "1", range_hdr, is_head);

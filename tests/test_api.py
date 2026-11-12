@@ -348,6 +348,23 @@ try:
         time.sleep(0.2)
     sts = {i['n']: i['st'] for i in j['items']}
     check('pkg: статусы done/already/failed', sts == {'good.pkg': 'done', 'dup.pkg': 'already_installed', 'fail.pkg': 'failed'}, sts)
+
+    # длинный путь: системе отдаётся короткая ссылка
+    deep = ROOT + '/' + 'очень_длинное_имя_папки_' * 4
+    os.makedirs(deep)
+    open(deep + '/Hollow Knight (CUSA13285) - 1.00 Game.pkg', 'wb').write(open(ROOT + '/good.pkg', 'rb').read())
+    st, j = post('/api/pkg/install', {'paths': [deep + '/Hollow Knight (CUSA13285) - 1.00 Game.pkg']})
+    check('pkg: длинный путь принят', st == 200, (st, j))
+    t0 = time.time()
+    while time.time() - t0 < 30:
+        st, j = get('/api/pkg')
+        if not j['active']: break
+        time.sleep(0.2)
+    link = '/tmp/ps4commander_test_data/links/UP0000-CUSA00000_00-TESTTESTTESTTEST.pkg'
+    check('pkg: для длинного пути создана короткая ссылка', os.path.islink(link) and os.readlink(link).endswith('Game.pkg'), os.path.lexists(link))
+    check('pkg: длинный путь установлен', [i['st'] for i in j['items']][-1] == 'done', j)
+    st, _, _ = raw('/p/UP0000-CUSA00000_00-TESTTESTTESTTEST')
+    check('/p/<id>: вне очереди недоступен', st == 404, st)
     st, j = post('/quit')
     check('quit', st == 200)
     try:

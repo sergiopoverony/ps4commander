@@ -191,6 +191,7 @@ try:
         st, j = get('/api/pkg')
         if not j['active']: break
         time.sleep(0.2)
+    check('smb: системе отдан короткий адрес /p/<id>', '/p/UP0000-CUSA00000_00-SMBSMBSMBSMBSMBS' in open(BASE + '/out.txt').read())
     check('smb: установка с шары завершилась', [i['st'] for i in j['items']] == ['done'], j)
     # Range: нужен для BGFT и перемотки видео
     st, body, hd = raw(q('/api/download', path='/smb/nas/sub/big.bin'), headers={'Range': 'bytes=1000-1999'})

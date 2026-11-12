@@ -16,6 +16,7 @@
 #include <deque>
 #include <mutex>
 #include <sys/mman.h>
+#include <cerrno>
 #include <sys/stat.h>
 #include <thread>
 #include <strings.h>
@@ -107,15 +108,31 @@ bool read_header(const std::string& path, std::string& cid, uint64_t& size, std:
     }
     return o;
 }
-[[maybe_unused]] std::string source_url(const std::string& path) {
-    if (smb_is_path(path)) return "http://127.0.0.1:" + std::to_string(http_port()) + "/api/download?path=" + pct(path);
-    return bgft_path(path);
+// Система хранит путь к pkg в буферах по 96 байт: более длинный обрезается, и пакет ищется под несуществующим именем.
+// Поэтому для длинных путей отдаём ей короткую символическую ссылку (как делает PS4Mount).
+const size_t kSysPathMax = 95;
+std::string source_url(const Item& it) {
+    if (smb_is_path(it.path)) return "http://127.0.0.1:" + std::to_string(http_port()) + "/p/" + it.cid;
+    std::string p = bgft_path(it.path);
+    if (p.size() <= kSysPathMax) return p;
+    std::string dir = std::string(DATA_DIR) + "/links";
+    mkdir(dir.c_str(), 0777);
+    std::string link = dir + "/" + it.cid + ".pkg";
+    unlink(link.c_str());
+    if (symlink(p.c_str(), link.c_str()) != 0) {
+        app_log("BGFT: не удалось создать короткую ссылку %s (%s), путь длиной %d может быть обрезан системой", link.c_str(), strerror(errno), (int)p.size());
+        return p;
+    }
+    std::string url = bgft_path(link);
+    app_log("BGFT: путь длиной %d заменён короткой ссылкой %s", (int)p.size(), url.c_str());
+    return url;
 }
 
 #ifdef HOST_TEST
 // Заглушки: имитация BGFT для проверок на ПК.
 bool bgft_load() { g_bgft_info = "host-test stub"; return true; }
 int bgft_register(const Item& it, int* task) {
+    app_log("BGFT: источник %s", source_url(it).c_str());
     if (it.path.find("busy") != std::string::npos) return (int)0x80990015;
     if (it.path.find("dup") != std::string::npos) return (int)0x80990088;
     if (it.path.find("fail") != std::string::npos) return (int)0x80990099;
@@ -189,8 +206,8 @@ bool bgft_load() {
 }
 
 int bgft_register(const Item& it, int* task) {
-    std::string url = source_url(it.path);
-    app_log("BGFT: источник %s", url.c_str());
+    std::string url = source_url(it);
+    app_log("BGFT: источник %s (%d симв.)", url.c_str(), (int)url.size());
     BgftParamEx pe;
     memset(&pe, 0, sizeof(pe));
     pe.params.entitlementType = 5;
@@ -310,6 +327,13 @@ std::string install_json() {
              "\",\"total\":" + std::to_string(i.total) + ",\"done\":" + std::to_string(i.done) + "}";
     }
     return o + "]}";
+}
+
+bool install_path_for_token(const std::string& token, std::string& path) {
+    std::lock_guard<std::mutex> l(g_mu);
+    for (auto it = g_items.rbegin(); it != g_items.rend(); ++it)
+        if (it->cid == token && is_active(*it)) { path = it->path; return true; }
+    return false;
 }
 
 void install_cancel() {
