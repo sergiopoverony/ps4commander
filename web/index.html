@@ -69,7 +69,6 @@ body.unsafe #unsafeTag { display: inline; }
 .pname { overflow-wrap: anywhere; }
 .pline { display: flex; justify-content: space-between; gap: 12px; opacity: .85; margin: 2px 0 5px; }
 .pbar { width: 100%; height: 10px; border-radius: 6px; background: rgba(127,127,127,.28); border: 1px solid rgba(127,127,127,.45); box-sizing: border-box; overflow: hidden; }
-.pbar.big { height: 14px; }
 .pfill { height: 100%; background: var(--panel); transition: width .6s ease; }
 .dlg.err { background: #aa0000; color: #fff; }
 .dlg h3 { margin: 0; text-align: center; font-size: 15px; }
@@ -863,7 +862,7 @@ function showPkgQueue() {
     const nodes = [];
     if (shown.length > 1) {
       const pc = pct(sd, st);
-      nodes.push(h('div', { class: 'pitem' }, h('div', { class: 'pline' }, h('b', null, t('pkgTotal')), h('b', null, pc + '%')), bar(pc, '', true)));
+      nodes.push(h('div', { class: 'pitem' }, h('div', { class: 'pline' }, h('b', null, t('pkgTotal')), h('b', null, pc + '%')), bar(pc, '')));
     }
     for (const i of shown) {
       const full = i.st === 'done' || i.st === 'already_installed';
