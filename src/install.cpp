@@ -148,7 +148,12 @@ uint64_t free_bytes(const std::string& dir) {
     if (statvfs(dir.c_str(), &v) != 0) return 0;
     return (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
 }
+// Системный установщик хорошо читает /data/pkg (проверено на консоли), поэтому копию кладём туда.
+#ifdef HOST_TEST
 std::string internal_stage_dir() { return std::string(DATA_DIR) + "/stage"; }
+#else
+std::string internal_stage_dir() { return "/data/pkg/ps4commander_stage"; }
+#endif
 
 // Куда положить копию: сначала подключённая флешка (место на внутреннем диске нужно для самой установки), иначе внутренний диск.
 bool pick_stage_dir(uint64_t size, std::string& dir) {
@@ -158,6 +163,7 @@ bool pick_stage_dir(uint64_t size, std::string& dir) {
         if (is_mount(m) && free_bytes(m) >= size + kUsbMargin) { dir = m + "/ps4commander_tmp"; return true; }
     }
 #endif
+    mkdir("/data/pkg", 0777);
     if (free_bytes(DATA_DIR) >= 2 * size + kInternalMargin) { dir = internal_stage_dir(); return true; }
     return false;
 }

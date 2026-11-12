@@ -408,14 +408,13 @@ bool netfs_root(std::string& root, std::string& err) {
     std::lock_guard<std::mutex> l(g_mtx);
     if (g_mounted) { root = g_root; return true; }
     if (!g_fail.empty()) { err = g_fail; return false; }   // ядро второй раз не трогаем
-    // Системный установщик, по данным PS4Mount, читает pkg только с диска, который сам смонтировал, поэтому точка
-    // монтирования лежит на флешке. Без флешки пробуем /data/ps4commander/mnt (работает ли так - проверяется на консоли).
-    std::string parent;
-    for (int i = 0; i < 8 && parent.empty(); i++) {
+    // Где монтировать. Системный установщик хорошо читает /data/pkg (проверено на консоли), поэтому сначала там;
+    // если ядро откажется - на флешке (PS4Mount монтирует только туда).
+    std::vector<std::string> parents = {"/data/pkg/ps4commander_nas"};
+    for (int i = 0; i < 8; i++) {
         std::string m = "/mnt/usb" + std::to_string(i);
-        if (is_mount(m)) parent = m + "/ps4commander_nas";
+        if (is_mount(m)) { parents.push_back(m + "/ps4commander_nas"); break; }
     }
-    if (parent.empty()) { parent = std::string(DATA_DIR) + "/mnt"; app_log("netfs: флешки нет, точка монтирования %s", parent.c_str()); }
     g_kp = kp_for(kernel_get_fw_version());
     if (!g_kp && access("/dev/fuse0", F_OK)) { err = g_fail = "no_fw"; app_log("netfs: для этой прошивки нет патча fusefs"); return false; }
     if (access("/dev/fuse0", F_OK)) {
@@ -431,31 +430,33 @@ bool netfs_root(std::string& root, std::string& err) {
         app_log("netfs: устройства fuse недоступны (%s)", err.c_str());
         return false;
     }
-    mkdir(std::string(DATA_DIR).c_str(), 0777);
-    mkdir(parent.c_str(), 0777);
-    std::string mnt;
-    for (int i = 1; i <= 8 && mnt.empty(); i++) {
-        std::string c = parent + "/nas-" + std::to_string(i);
-        if (mounted_at(c)) continue;   // монтирование прошлого запуска не размонтировать: берём новое имя
-        if (mkdir(c.c_str(), 0777) == 0 || errno == EEXIST) mnt = c;
-    }
-    if (mnt.empty()) { err = g_fail = "mount"; app_log("netfs: все точки монтирования заняты, перезагрузите консоль"); return false; }
     static struct fuse_operations ops;
     memset(&ops, 0, sizeof(ops));
     ops.getattr = fs_getattr; ops.readdir = fs_readdir; ops.open = fs_open; ops.read = fs_read;
     ops.release = fs_release; ops.statfs = fs_statfs; ops.flush = fs_flush; ops.access = fs_access;
-    char a0[] = "ps4commander", a2[] = "-o", a3[] = "allow_other", a4[] = "-o", a5[] = "rw", a6[] = "-f";
-    char* argv[] = {a0, const_cast<char*>(mnt.c_str()), a2, a3, a4, a5, a6, nullptr};
-    char* mountpoint = nullptr;
-    int mt = 0;
-    g_fuse = fuse_setup(7, argv, &ops, sizeof(ops), &mountpoint, &mt, nullptr);
-    if (!g_fuse) {
+    std::string mnt;
+    err = "mount";
+    for (auto& parent : parents) {
+        mkdir("/data/pkg", 0777);
+        mkdir(parent.c_str(), 0777);
+        std::string c;
+        for (int i = 1; i <= 8 && c.empty(); i++) {
+            std::string d = parent + "/nas-" + std::to_string(i);
+            if (mounted_at(d)) continue;   // монтирование прошлого запуска не размонтировать: берём новое имя
+            if (mkdir(d.c_str(), 0777) == 0 || errno == EEXIST) c = d;
+        }
+        if (c.empty()) { app_log("netfs: в %s нет свободной точки монтирования", parent.c_str()); continue; }
+        char a0[] = "ps4commander", a2[] = "-o", a3[] = "allow_other", a4[] = "-o", a5[] = "rw", a6[] = "-f";
+        char* argv[] = {a0, const_cast<char*>(c.c_str()), a2, a3, a4, a5, a6, nullptr};
+        char* mountpoint = nullptr;
+        int mt = 0;
+        g_fuse = fuse_setup(7, argv, &ops, sizeof(ops), &mountpoint, &mt, nullptr);
+        if (g_fuse) { mnt = c; break; }
         bool en = false; probe_devices(&en);
-        err = en ? "reload" : "mount";
-        if (!en) g_fail = err;
-        app_log("netfs: ядро отказалось монтировать %s (%s)", mnt.c_str(), err.c_str());
-        return false;
+        app_log("netfs: ядро отказалось монтировать %s%s", c.c_str(), en ? " (нужна перезагрузка payload)" : "");
+        if (en) { err = "reload"; return false; }
     }
+    if (mnt.empty()) { g_fail = err; return false; }
     g_root = mnt;
     g_mounted = true;
     pthread_t th;
