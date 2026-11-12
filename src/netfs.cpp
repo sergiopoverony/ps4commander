@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 
 #include "log.h"
@@ -339,10 +340,18 @@ std::string g_root, g_fail;
 bool g_mounted = false;
 
 // --- операции FUSE ---
-int fs_getattr(const char* path, struct stat* st) { return nf_getattr(path, st); }
+std::atomic<unsigned> g_ops{0};
+// Первые обращения системы к папке пишем в лог: видно, трогает ли установщик файл вообще.
+bool log_op() { return g_ops++ < 80; }
+int fs_getattr(const char* path, struct stat* st) {
+    int r = nf_getattr(path, st);
+    if (log_op()) app_log("netfs: getattr %s -> %d", path, r);
+    return r;
+}
 int fs_readdir(const char* path, void* buf, fuse_fill_dir_t fill, off_t, struct fuse_file_info*) {
     std::vector<std::string> names;
     int r = nf_readdir(path, names);
+    if (log_op()) app_log("netfs: readdir %s -> %d", path, r);
     if (r < 0) return r;
     fill(buf, ".", nullptr, 0);
     fill(buf, "..", nullptr, 0);
@@ -353,13 +362,14 @@ int fs_open(const char* path, struct fuse_file_info* fi) {
     // Открытие на запись не отклоняем: BGFT открывает pkg так при запуске, ошибка записалась бы в задачу. Сама запись не поддерживается.
     NfHandle* h = nullptr;
     int r = nf_open(path, &h);
-    if (r < 0) { app_log("netfs: open %s -> %d", path, r); return r; }
+    if (r < 0 || log_op()) app_log("netfs: open %s (флаги 0x%x) -> %d", path, fi->flags, r);
+    if (r < 0) return r;
     fi->fh = (uint64_t)(uintptr_t)h;
     return 0;
 }
 int fs_read(const char* path, char* buf, size_t size, off_t off, struct fuse_file_info* fi) {
     long r = nf_read((NfHandle*)(uintptr_t)fi->fh, buf, size, (uint64_t)off);
-    if (r < 0) app_log("netfs: read %s @%lld -> %ld", path, (long long)off, r);
+    if (r < 0 || log_op()) app_log("netfs: read %s @%lld +%zu -> %ld", path, (long long)off, size, r);
     return (int)r;
 }
 int fs_release(const char*, struct fuse_file_info* fi) { nf_close((NfHandle*)(uintptr_t)fi->fh); return 0; }

@@ -115,10 +115,16 @@ bool read_header(const std::string& path, std::string& cid, uint64_t& size, std:
 // Поэтому для длинных путей отдаём ей короткую символическую ссылку (как делает PS4Mount).
 const size_t kSysPathMax = 95;
 std::string source_url(const Item& it) {
-    if (it.src.compare(0, 7, "http://") == 0) return it.src;
     std::string p = bgft_path(!it.src.empty() ? it.src : it.path);
-    if (p.size() <= kSysPathMax) return p;
+    // Путь через FUSE всегда отдаём короткой ссылкой без пробелов и скобок (как PS4Mount): и длина, и имя файла могут не понравиться системе.
+    bool force = !it.src.empty();
+    if (!force && p.size() <= kSysPathMax) return p;
+#ifdef HOST_TEST
     std::string dir = std::string(DATA_DIR) + "/links";
+#else
+    std::string dir = force ? "/data/pkg/ps4commander_links" : std::string(DATA_DIR) + "/links";
+    if (force) mkdir("/data/pkg", 0777);
+#endif
     mkdir(dir.c_str(), 0777);
     std::string link = dir + "/" + it.cid + ".pkg";
     unlink(link.c_str());
@@ -127,7 +133,7 @@ std::string source_url(const Item& it) {
         return p;
     }
     std::string url = bgft_path(link);
-    app_log("BGFT: путь длиной %d заменён короткой ссылкой %s", (int)p.size(), url.c_str());
+    app_log("BGFT: путь %s заменён короткой ссылкой %s", p.c_str(), url.c_str());
     return url;
 }
 
