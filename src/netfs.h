@@ -22,3 +22,6 @@ int nf_statfs(struct statvfs* sv);
 bool netfs_root(std::string& root, std::string& err, bool usb = false);
 // "/smb/alias/a/b.pkg" -> "<root>/alias/a/b.pkg"
 std::string netfs_map(const std::string& root, const std::string& smb_path);
+
+// Эта папка - точка монтирования FUSE (в списке дисков её не показываем и не трогаем: у умершего монтирования stat зависает).
+bool netfs_is_fuse_path(const std::string& p);

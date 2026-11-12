@@ -286,23 +286,18 @@ void run_item(Item* it) {
     if (!smb_is_path(it->path)) { run_item_inner(it, true); return; }
     if (g_cancel || g_stop) { set(it, "cancelled"); return; }
     set(it, "registering");
-    // Сначала монтирование в /data/pkg; если система не принимает пакет оттуда (0x8099006A), монтируем на флешке (как PS4Mount).
-    for (int k = 0; k < 2; k++) {
-        std::string root, e;
-        if (!netfs_root(root, e, k == 1)) {
-            app_log("установка %s: FUSE%s недоступен (%s)", it->name.c_str(), k ? " на флешке" : "", e.c_str());
-            if (k == 0) { set(it, "failed", "fuse: " + e); return; }
-            break;
-        }
-        { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
-        app_log("установка %s: папка FUSE %s", it->name.c_str(), it->src.c_str());
-        fuse_selfcheck(it->src);
-        int r = run_item_inner(it, k == 1);
-        { std::lock_guard<std::mutex> l(g_mu); it->src.clear(); }
-        if (r != kSourceRefused) return;
-        app_log("установка %s: система не приняла папку FUSE %s", it->name.c_str(), k ? "на флешке" : "в /data/pkg");
+    std::string root, e;
+    if (!netfs_root(root, e)) {
+        app_log("установка %s: FUSE недоступен (%s)", it->name.c_str(), e.c_str());
+        set(it, "failed", "fuse: " + e);
+        return;
     }
-    set(it, "failed", "register 0x8099006A (FUSE не принят; подключите флешку)");
+    { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }
+    app_log("установка %s: папка FUSE %s", it->name.c_str(), it->src.c_str());
+    fuse_selfcheck(it->src);
+    run_item_inner(it, true);
+    std::lock_guard<std::mutex> l(g_mu);
+    it->src.clear();
 }
 
 int run_item_inner(Item* it, bool final_try) {

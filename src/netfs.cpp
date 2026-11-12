@@ -147,6 +147,7 @@ std::string netfs_map(const std::string& root, const std::string& smb_path) {
 
 #ifdef HOST_TEST
 bool netfs_root(std::string&, std::string& err, bool) { err = "no_fw"; return false; }
+bool netfs_is_fuse_path(const std::string&) { return false; }
 #else
 
 #define FUSE_USE_VERSION 26
@@ -388,16 +389,20 @@ void* fuse_thread(void* arg) {
     return nullptr;
 }
 
-bool is_mount(const std::string& dir) {
-    struct stat a, b;
-    return stat(dir.c_str(), &a) == 0 && stat("/mnt", &b) == 0 && a.st_dev != b.st_dev;
-}
-bool mounted_at(const std::string& path) {
+struct MntInfo { std::string on, type; };
+// Список монтирований без обращения к самим файловым системам (stat на FUSE, чей владелец умер, зависает).
+std::vector<MntInfo> mount_list() {
+    std::vector<MntInfo> out;
     int n = getfsstat(nullptr, 0, MNT_NOWAIT);
-    if (n <= 0) return false;
+    if (n <= 0) return out;
     std::vector<struct statfs> list((size_t)n + 8);
     n = getfsstat(list.data(), (long)(list.size() * sizeof(struct statfs)), MNT_NOWAIT);
-    for (int i = 0; i < n; i++) if (path == list[(size_t)i].f_mntonname || "/user" + path == list[(size_t)i].f_mntonname) return true;
+    for (int i = 0; i < n; i++) out.push_back({list[(size_t)i].f_mntonname, list[(size_t)i].f_fstypename});
+    return out;
+}
+bool is_fuse_type(const std::string& t) { return t.compare(0, 4, "fuse") == 0; }
+bool mounted_at(const std::vector<MntInfo>& ml, const std::string& path) {
+    for (auto& m : ml) if (path == m.on || "/user" + path == m.on) return true;
     return false;
 }
 
@@ -416,22 +421,16 @@ bool probe_devices(bool* enxio) {
 
 }  // namespace
 
-bool netfs_root(std::string& root, std::string& err, bool usb) {
-    Mnt& M = g_mnt[usb ? 1 : 0];
+bool netfs_is_fuse_path(const std::string& p) {
+    for (auto& m : mount_list()) if (is_fuse_type(m.type) && (m.on == p || m.on == "/user" + p)) return true;
+    return false;
+}
+
+bool netfs_root(std::string& root, std::string& err, bool) {
+    Mnt& M = g_mnt[0];
     std::lock_guard<std::mutex> l(g_mtx);
     if (M.mounted) { root = M.root; return true; }
     if (!g_fail.empty()) { err = g_fail; return false; }   // ядро второй раз не трогаем
-    // Системный установщик читает pkg с диска, который сам смонтировал; по данным PS4Mount это флешка (/mnt/usbN).
-    // /data/pkg он читает как обычную папку, а как точку монтирования FUSE - проверяется на консоли.
-    std::vector<std::string> parents;
-    if (!usb) parents.push_back("/data/pkg/ps4commander_nas");
-    else {
-        for (int i = 0; i < 8 && parents.empty(); i++) {
-            std::string m = "/mnt/usb" + std::to_string(i);
-            if (is_mount(m)) parents.push_back(m + "/ps4commander_nas");
-        }
-        if (parents.empty()) { err = "no_usb"; return false; }
-    }
     g_kp = kp_for(kernel_get_fw_version());
     if (!g_kp && access("/dev/fuse0", F_OK)) { err = g_fail = "no_fw"; app_log("netfs: для этой прошивки нет патча fusefs"); return false; }
     if (access("/dev/fuse0", F_OK)) {
@@ -447,22 +446,39 @@ bool netfs_root(std::string& root, std::string& err, bool usb) {
         app_log("netfs: устройства fuse недоступны (%s)", err.c_str());
         return false;
     }
+    // Системный установщик принимает пакет только с точки монтирования /mnt/usbN (на /data/pkg проверено: отказ 0x8099006A).
+    // Есть флешка - папка nas-N внутри неё (как PS4Mount). Нет - монтируем FUSE прямо на свободную /mnt/usbN.
+    std::vector<MntInfo> ml = mount_list();
+    std::string usbdir;
+    for (int i = 0; i < 8 && usbdir.empty(); i++) {
+        std::string m = "/mnt/usb" + std::to_string(i);
+        for (auto& x : ml) if ((x.on == m || x.on == "/user" + m) && !is_fuse_type(x.type)) usbdir = m;
+    }
+    std::vector<std::string> cands;
+    if (!usbdir.empty()) {
+        std::string parent = usbdir + "/ps4commander_nas";
+        mkdir(parent.c_str(), 0777);
+        for (int i = 1; i <= 8; i++) {
+            std::string d = parent + "/nas-" + std::to_string(i);
+            if (mounted_at(ml, d)) continue;   // монтирование прошлого запуска не размонтировать: берём новое имя
+            if (mkdir(d.c_str(), 0777) == 0 || errno == EEXIST) cands.push_back(d);
+        }
+    } else {
+        for (int i = 7; i >= 0; i--) {
+            std::string d = "/mnt/usb" + std::to_string(i);
+            struct stat st;
+            if (!mounted_at(ml, d) && stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) cands.push_back(d);
+        }
+        app_log("netfs: флешки нет, монтирую прямо на свободную /mnt/usbN (%d вариантов)", (int)cands.size());
+    }
+    if (cands.empty()) { err = g_fail = "mount"; app_log("netfs: нет свободной точки монтирования, перезагрузите консоль"); return false; }
     static struct fuse_operations ops;
     memset(&ops, 0, sizeof(ops));
     ops.getattr = fs_getattr; ops.readdir = fs_readdir; ops.open = fs_open; ops.read = fs_read;
     ops.release = fs_release; ops.statfs = fs_statfs; ops.flush = fs_flush; ops.access = fs_access;
     std::string mnt;
     err = "mount";
-    for (auto& parent : parents) {
-        mkdir("/data/pkg", 0777);
-        mkdir(parent.c_str(), 0777);
-        std::string c;
-        for (int i = 1; i <= 8 && c.empty(); i++) {
-            std::string d = parent + "/nas-" + std::to_string(i);
-            if (mounted_at(d)) continue;   // монтирование прошлого запуска не размонтировать: берём новое имя
-            if (mkdir(d.c_str(), 0777) == 0 || errno == EEXIST) c = d;
-        }
-        if (c.empty()) { app_log("netfs: в %s нет свободной точки монтирования", parent.c_str()); continue; }
+    for (auto& c : cands) {
         char a0[] = "ps4commander", a2[] = "-o", a3[] = "allow_other", a4[] = "-o", a5[] = "rw", a6[] = "-f";
         char* argv[] = {a0, const_cast<char*>(c.c_str()), a2, a3, a4, a5, a6, nullptr};
         char* mountpoint = nullptr;

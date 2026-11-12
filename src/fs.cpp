@@ -1,4 +1,5 @@
 #include "fs.h"
+#include "netfs.h"
 #include "json.h"
 #include "smb.h"
 #include "vfs.h"
@@ -147,6 +148,7 @@ std::string fs_roots_json() {
     std::string o = "[";
     bool first = true;
     for (int k = 0; cand[k]; ++k) {
+        if (netfs_is_fuse_path(cand[k])) continue;   // наше FUSE-монтирование: не трогаем
         struct stat st;
         if (stat(cand[k], &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         if (!first) o += ',';
