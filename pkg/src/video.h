@@ -10,6 +10,7 @@ bool video_open(const std::string& path, int userId);   // запускает с
 void video_close();
 int  video_state();                 // 0 - нет, 1 - запускается, 2 - играет, 3 - закончилось, 4 - ошибка
 std::string video_error();
+std::string video_note();           // кодек видеодорожки, которую плеер консоли не открыл (пусто - всё в порядке)
 bool video_poll_frame();            // вызывать из главного потока: true - есть новый кадр
 const Picture& video_picture();     // последний кадр (может быть пустым - звук без видео)
 bool video_has_video();

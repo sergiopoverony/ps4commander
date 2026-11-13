@@ -1361,6 +1361,8 @@ static void draw_video()
     else if (st == 3) msg = tr("audioDone", "Finished");
     else if (pic.px.empty() && st == 2) msg = video_has_video() ? tr("loading", "Loading...") : tr("audioPlaying", "Playing");
     if (!msg.empty()) put_center(FRAME_WIDTH / 2, msg, 480, mc, blk);
+    if (st == 2 && !video_has_video() && !video_note().empty())
+        put_center(FRAME_WIDTH / 2, fit(tr_sub("vidNoDecode", "The video track ({c}) is not supported by the console player: audio only.", { { "c", video_note() } }), 140), 530, Color{ 255, 190, 120 }, blk);
 
     // нижняя панель: имя, время, полоска, подсказка
     double pos = video_seconds(), tot = video_total();

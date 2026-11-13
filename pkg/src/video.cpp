@@ -288,6 +288,100 @@ int32_t cb_read(void* p, uint8_t* buf, uint64_t pos, uint32_t len)
     return ret;
 }
 
+
+// ---------------------------------------------------------------- разбор MP4: какой кодек у видеодорожки
+
+static uint32_t be32(const unsigned char* p) { return ((uint32_t)p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
+
+struct Mp4Track { std::string handler, fourcc; int profile = 0, level = 0, width = 0, height = 0; };
+
+static void mp4_parse(const unsigned char* d, size_t n, std::vector<Mp4Track>& out, Mp4Track* cur, int depth)
+{
+    size_t p = 0;
+    while (p + 8 <= n) {
+        uint64_t sz = be32(d + p);
+        const unsigned char* t = d + p + 4;
+        size_t hdr = 8;
+        if (sz == 1 && p + 16 <= n) { sz = ((uint64_t)be32(d + p + 8) << 32) | be32(d + p + 12); hdr = 16; }
+        if (sz == 0) sz = n - p;
+        if (sz < hdr || p + sz > n) sz = n - p;
+        const unsigned char* b = d + p + hdr;
+        size_t bl = (size_t)sz - hdr;
+        if (!memcmp(t, "trak", 4) && depth < 4) {
+            Mp4Track tr;
+            mp4_parse(b, bl, out, &tr, depth + 1);
+            out.push_back(tr);
+        } else if ((!memcmp(t, "moov", 4) || !memcmp(t, "mdia", 4) || !memcmp(t, "minf", 4) || !memcmp(t, "stbl", 4)) && depth < 8) {
+            mp4_parse(b, bl, out, cur, depth + 1);
+        } else if (cur && !memcmp(t, "hdlr", 4) && bl >= 12) {
+            cur->handler.assign((const char*)b + 8, 4);
+        } else if (cur && !memcmp(t, "stsd", 4) && bl >= 16 + 86) {
+            const unsigned char* e = b + 8;                  // первая запись описания
+            cur->fourcc.assign((const char*)e + 4, 4);
+            cur->width = (int)((e[32] << 8) | e[33]);
+            cur->height = (int)((e[34] << 8) | e[35]);
+            size_t el = std::min<size_t>(be32(e), bl - 8);
+            size_t q = 86;
+            while (q + 8 <= el) {
+                uint32_t cs = be32(e + q);
+                if (cs < 8 || q + cs > el) break;
+                if (!memcmp(e + q + 4, "avcC", 4) && cs >= 12) { cur->profile = e[q + 8 + 1]; cur->level = e[q + 8 + 3]; }
+                q += cs;
+            }
+        }
+        p += (size_t)sz;
+    }
+}
+
+// Возвращает описание видеодорожки ("H.264 High L4.1 1920x1080", "H.265/HEVC 3840x2160"...); пусто - видеодорожки нет/не разобрать.
+static std::string mp4_video_info(const std::string& path, std::string* codecOnly)
+{
+    unsigned long long pos = 0, total = 0;
+    unsigned char hd[16];
+    for (int guard = 0; guard < 64; guard++) {
+        long n = service_read_range(path, pos, 16, hd, &total);
+        if (n < 8) return "";
+        uint64_t sz = be32(hd);
+        if (sz == 1 && n >= 16) sz = ((uint64_t)be32(hd + 8) << 32) | be32(hd + 12);
+        if (sz == 0) sz = total - pos;
+        if (!memcmp(hd + 4, "moov", 4)) {
+            if (sz < 16 || sz > 16u * 1024 * 1024) return "";
+            std::vector<unsigned char> buf((size_t)sz);
+            size_t got = 0;
+            while (got < buf.size()) {
+                unsigned want = (unsigned)std::min<size_t>(buf.size() - got, 1024 * 1024);
+                long r = service_read_range(path, pos + got, want, buf.data() + got, NULL);
+                if (r <= 0) return "";
+                got += (size_t)r;
+            }
+            std::vector<Mp4Track> tracks;
+            mp4_parse(buf.data(), buf.size(), tracks, nullptr, 0);
+            for (auto& t : tracks) {
+                if (t.handler != "vide") continue;
+                std::string codec = t.fourcc;
+                if (t.fourcc == "avc1" || t.fourcc == "avc3") {
+                    const char* pn = t.profile == 66 ? "Baseline" : t.profile == 77 ? "Main" : t.profile == 88 ? "Extended" : t.profile == 100 ? "High" :
+                                     t.profile == 110 ? "High 10 (10 bit)" : t.profile == 122 ? "High 4:2:2" : t.profile == 244 ? "High 4:4:4" : "";
+                    char b[96];
+                    snprintf(b, sizeof(b), "H.264 %s L%d.%d", pn, t.level / 10, t.level % 10);
+                    codec = b;
+                } else if (t.fourcc == "hvc1" || t.fourcc == "hev1") codec = "H.265/HEVC";
+                else if (t.fourcc == "vp09") codec = "VP9";
+                else if (t.fourcc == "av01") codec = "AV1";
+                else if (t.fourcc == "mp4v") codec = "MPEG-4 Part 2";
+                if (codecOnly) *codecOnly = codec;
+                char w[48];
+                snprintf(w, sizeof(w), " %dx%d", t.width, t.height);
+                return codec + w;
+            }
+            return "";
+        }
+        if (sz < 8 || pos + sz >= total) return "";
+        pos += sz;
+    }
+    return "";
+}
+
 // ---------------------------------------------------------------- сессия
 
 struct Session;
@@ -305,6 +399,7 @@ struct Session {
     std::atomic<int> hasVideo{ 0 };
     void* player = nullptr;
     std::string err;
+    std::string note;                       // пояснение для экрана (например, кодек, который плеер консоли не умеет)
 };
 void cb_event(void* p, int32_t ev, int32_t srcId, void*)
 {
@@ -364,6 +459,8 @@ void* video_main_inner(Session* S)
         scePthreadAttrDestroy(&ra);
     }
     logf_("video: file '%s' size %llu", S->path.c_str(), total);
+    std::string vinfo = mp4_video_info(S->path, &S->note);
+    logf_("video: mp4 video track: %s", vinfo.empty() ? "none / not parsed" : vinfo.c_str());
 
     AvInit init;
     memset(&init, 0, sizeof(init));
@@ -419,6 +516,7 @@ void* video_main_inner(Session* S)
         if (er < 0) logf_("video: enable stream %d failed for good (0x%08X)", i, (unsigned)er);
         if (isV) { vEn = er >= 0; S->hasVideo = vEn ? 1 : 0; } else aEn = er >= 0;
     }
+    if (vEn) S->note.clear();
     if (!vEn && !aEn && !S->stop) { S->err = "enable"; S->state = 4; g_api.stop(h); g_api.close(h); S->player = nullptr; return NULL; }
     sleep_ms(100);
     { int sr = g_api.start(h); logf_("video: sceAvPlayerStart = 0x%08X, active=%d", (unsigned)sr, (int)g_api.isActive(h)); }
@@ -538,6 +636,7 @@ void video_close()
 }
 
 int video_state() { return g_s ? (int)g_s->state : 0; }
+std::string video_note() { return g_s ? g_s->note : ""; }
 std::string video_error() { return g_s ? g_s->err : ""; }
 bool video_has_video() { return g_s && g_s->hasVideo; }
 const Picture& video_picture() { return g_pic; }
