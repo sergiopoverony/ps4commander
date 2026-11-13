@@ -861,7 +861,7 @@ function showPkgQueue() {
       const cls = full ? 'done' : i.st === 'failed' ? 'bad' : i.st === 'cancelled' ? 'stopped' : '';
       nodes.push(h('div', { class: 'pitem' },
         h('div', { class: 'pname' }, i.n),
-        h('div', { class: 'pline' }, h('span', null, t(stName[i.st] || 'stQueued') + (i.msg ? '  ' + (/0x80990086/.test(i.msg) ? t('e_task_exists') : i.msg) : '')), h('span', null, i.st === 'installing' || full ? pc + '%' : '')),
+        h('div', { class: 'pline' }, h('span', null, t(stName[i.st] || 'stQueued') + (i.msg ? '  ' + (/0x80990086/.test(i.msg) ? t('e_task_exists') : /^fuse: no_fw/.test(i.msg) ? t('e_fuse_nofw', { v: i.msg.slice(12).trim() || '?' }) : i.msg) : '')), h('span', null, i.st === 'installing' || full ? pc + '%' : '')),
         bar(pc, cls)));
     }
     if (!nodes.length) nodes.push(h('div', null, t('pkgEmpty')));

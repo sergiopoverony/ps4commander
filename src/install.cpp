@@ -310,7 +310,8 @@ void run_item(Item* it) {
     std::string root, e;
     if (!netfs_root(root, e)) {
         app_log("установка %s: FUSE недоступен (%s)", it->name.c_str(), e.c_str());
-        set(it, "failed", "fuse: " + e);
+        std::string fw = e == "no_fw" ? netfs_fw_str() : "";
+        set(it, "failed", "fuse: " + e + (fw.empty() ? "" : " " + fw));
         return;
     }
     { std::lock_guard<std::mutex> l(g_mu); it->src = netfs_map(root, it->path); }

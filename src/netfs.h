@@ -17,6 +17,7 @@ void nf_close(NfHandle* h);
 int nf_statfs(struct statvfs* sv);
 
 // Монтирует (один раз за запуск) и возвращает путь папки, в которой лежат шары как каталоги.
+std::string netfs_fw_str();   // версия прошивки "9.60" (пусто в тестах)
 // false: err = no_usb, no_fw, no_fuse, reload, mount (причина пишется в лог).
 // usb=false: точка монтирования в /data/pkg, usb=true: на подключённой флешке (no_usb, если её нет).
 bool netfs_root(std::string& root, std::string& err, bool usb = false);

@@ -146,6 +146,7 @@ std::string netfs_map(const std::string& root, const std::string& smb_path) {
 }
 
 #ifdef HOST_TEST
+std::string netfs_fw_str() { return ""; }
 bool netfs_root(std::string&, std::string& err, bool) { err = "no_fw"; return false; }
 bool netfs_is_fuse_path(const std::string&) { return false; }
 void netfs_idle() {}
@@ -435,13 +436,19 @@ bool netfs_is_fuse_path(const std::string& p) {
     return false;
 }
 
+std::string netfs_fw_str() {
+    uint32_t v = kernel_get_fw_version();
+    char b[16]; snprintf(b, sizeof b, "%x.%02x", v >> 24, (v >> 16) & 0xff);
+    return b;
+}
+
 bool netfs_root(std::string& root, std::string& err, bool) {
     Mnt& M = g_mnt[0];
     std::lock_guard<std::mutex> l(g_mtx);
     if (M.mounted) { root = M.root; return true; }
     if (!g_fail.empty()) { err = g_fail; return false; }   // ядро второй раз не трогаем
     g_kp = kp_for(kernel_get_fw_version());
-    if (!g_kp && access("/dev/fuse0", F_OK)) { err = g_fail = "no_fw"; app_log("netfs: для этой прошивки нет патча fusefs"); return false; }
+    if (!g_kp && access("/dev/fuse0", F_OK)) { err = g_fail = "no_fw"; app_log("netfs: для прошивки %s нет патча fusefs", netfs_fw_str().c_str()); return false; }
     if (access("/dev/fuse0", F_OK)) {
         errno = 0;
         long pr = syscall(11, (long)fuse_patch);
