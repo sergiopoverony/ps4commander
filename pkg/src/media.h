@@ -20,4 +20,5 @@ void audio_pause_toggle();
 bool audio_paused();
 int  audio_state();                // 0 - нет, 1 - запускается, 2 - играет, 3 - закончилось, 4 - ошибка
 double audio_seconds();            // сколько проиграно
+void audio_seek(int deltaMs);     // перемотка относительно текущего места
 double audio_total();              // длительность, 0 - неизвестна

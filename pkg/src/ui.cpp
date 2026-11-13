@@ -1334,7 +1334,7 @@ static void draw_audio()
     std::string tm = fmt_time(pos) + (tot > 0 ? " / " + fmt_time(tot) : "");
     draw_text(tm, x + w - 40 - count_cp(tm) * cell_w(), y + 154, dlg_dim(), T.dlgBg);
     draw_bar_progress(x + 40, y + 180, w - 80, tot > 0 ? pos / tot : (st == 3 ? 1.0 : 0.0));
-    dlg_hint(x, y, w, h, "{cross} " + tr("hint_pause", "pause / play") + "          {circle} " + tr("hint_stop", "stop"));
+    dlg_hint(x, y, w, h, "{cross} " + tr("hint_pause", "pause / play") + "     {arrows} -10 / +10 s     {circle} " + tr("hint_stop", "stop"));
 }
 
 static void draw_video()
@@ -1760,7 +1760,11 @@ void ui_pump()
         else if (r2) video_seek(60000);
         break;
     case F_AUDIO:
-        if (cross) audio_pause_toggle();
+        if (left) audio_seek(-10000);
+        else if (right) audio_seek(10000);
+        else if (l2) audio_seek(-60000);
+        else if (r2) audio_seek(60000);
+        else if (cross) audio_pause_toggle();
         else if (circle) { audio_stop(); focus_pop(); }
         break;
     case F_TEXT:

@@ -1,5 +1,7 @@
 #include "httpc.h"
 #include "net.h"
+#include "log.h"
+#include <errno.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <stdio.h>
@@ -71,18 +73,18 @@ long http_read_range(const std::string& host, int port, const std::string& path,
 {
     if (len == 0) return 0;
     int s = net_connect(host.c_str(), port, timeout_ms);
-    if (s < 0) return -1;
+    if (s < 0) { logf_("range: connect failed"); return -1; }
     char req[1400];
     snprintf(req, sizeof(req), "GET %s HTTP/1.0\r\nHost: %s\r\nRange: bytes=%llu-%llu\r\nConnection: close\r\n\r\n",
              path.c_str(), host.c_str(), off, off + len - 1);
-    if (!send_all(s, req, strlen(req))) { close(s); return -1; }
+    if (!send_all(s, req, strlen(req))) { logf_("range: send failed errno=%d", errno); close(s); return -1; }
 
     std::string head;
     char buf[4096];
     size_t hend = std::string::npos;
     while (hend == std::string::npos) {
         int n = recv(s, buf, sizeof(buf), 0);
-        if (n <= 0) { close(s); return -1; }
+        if (n <= 0) { logf_("range: no response (recv=%d errno=%d, %d bytes of header)", n, errno, (int)head.size()); close(s); return -1; }
         head.append(buf, (size_t)n);
         hend = head.find("\r\n\r\n");
         if (head.size() > 16384 && hend == std::string::npos) { close(s); return -1; }
@@ -98,7 +100,7 @@ long http_read_range(const std::string& host, int port, const std::string& path,
         }
     }
     if (status == 416) { close(s); return 0; }
-    if (status != 206 && !(status == 200 && off == 0)) { close(s); return -1; }
+    if (status != 206 && !(status == 200 && off == 0)) { logf_("range: unexpected HTTP status %d", status); close(s); return -1; }
     size_t got = head.size() - (hend + 4);
     if (got > len) got = len;
     memcpy(dst, head.data() + hend + 4, got);

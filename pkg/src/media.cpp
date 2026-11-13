@@ -64,6 +64,7 @@ struct Src {
     virtual ~Src() {}
     virtual bool init() = 0;
     virtual int read(int16_t* dst, int frames) = 0;   // сколько кадров записано; 0 - конец
+    virtual bool seek(double sec) = 0;                // перейти на секунду sec (в пределах файла)
 };
 
 static inline int16_t clip16(int v) { return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v); }
@@ -119,6 +120,11 @@ struct WavSrc : Src {
         }
         return k;
     }
+    bool seek(double sec) override {
+        size_t f = (size_t)(sec * rate);
+        pos = std::min(pcmLen / frameBytes, f) * frameBytes;
+        return true;
+    }
 };
 
 struct OggSrc : Src {
@@ -138,13 +144,16 @@ struct OggSrc : Src {
     int read(int16_t* dst, int frames) override {
         return stb_vorbis_get_samples_short_interleaved(v, 2, dst, frames * 2);
     }
+    bool seek(double sec) override { return stb_vorbis_seek(v, (unsigned)(sec * rate)) != 0; }
 };
 
 struct Mp3Src : Src {
     const unsigned char* d; size_t n, pos = 0;
     mp3dec_t dec;
     int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
-    int have = 0, at = 0, chans = 2;      // последний декодированный кадр: сколько кадров всего и сколько уже отдано
+    size_t startPos = 0;                  // начало звуковых данных (после ID3)
+    unsigned long long decoded = 0;       // сколько кадров (на канал) декодировано - для оценки скорости потока
+    int have = 0, at = 0, chans = 2, kbps = 0;      // последний декодированный кадр: сколько кадров всего и сколько уже отдано
     Mp3Src(const std::string& s) : d((const unsigned char*)s.data()), n(s.size()) { mp3dec_init(&dec); }
     bool decodeNext() {
         for (int guard = 0; guard < 200000 && pos < n; guard++) {
@@ -152,7 +161,7 @@ struct Mp3Src : Src {
             int smp = mp3dec_decode_frame(&dec, d + pos, (int)(n - pos), pcm, &info);
             if (info.frame_bytes <= 0) return false;
             pos += (size_t)info.frame_bytes;
-            if (smp > 0) { have = smp; at = 0; chans = info.channels; if (!rate) rate = info.hz; return true; }
+            if (smp > 0) { have = smp; at = 0; chans = info.channels; if (!rate) rate = info.hz; kbps = info.bitrate_kbps; decoded += (unsigned long long)smp; return true; }
         }
         return false;
     }
@@ -162,11 +171,10 @@ struct Mp3Src : Src {
             size_t sz = ((d[6] & 0x7F) << 21) | ((d[7] & 0x7F) << 14) | ((d[8] & 0x7F) << 7) | (d[9] & 0x7F);
             pos = std::min(n, 10 + sz);
         }
-        size_t start = pos;
+        startPos = pos;
         if (!decodeNext() || rate < 1000) return false;
-        // длительность - по среднему размеру кадра грубо (без полного прохода): битрейт первого кадра
-        (void)start;
-        total = 0;
+        // длительность - оценка по битрейту первого кадра (для файлов с переменным битрейтом приблизительная)
+        total = kbps > 0 ? (double)(n - startPos) * 8.0 / (kbps * 1000.0) : 0;
         return true;
     }
     int read(int16_t* dst, int frames) override {
@@ -178,6 +186,17 @@ struct Mp3Src : Src {
             at++; k++;
         }
         return k;
+    }
+    bool seek(double sec) override {
+        // точного индекса у MP3 нет: переходим по средней скорости потока (байт на секунду), как делают простые плееры
+        double bps = (decoded > (unsigned long long)rate && pos > startPos) ? (double)(pos - startPos) / ((double)decoded / rate) : kbps * 125.0;
+        if (bps < 1000) return false;
+        size_t np = startPos + (size_t)(sec * bps);
+        if (np >= n) np = n > 4096 ? n - 4096 : 0;
+        pos = np; have = at = 0;
+        decoded = (unsigned long long)(sec * rate);
+        mp3dec_init(&dec);
+        return decodeNext();
     }
 };
 
@@ -192,6 +211,7 @@ struct Player {
     std::atomic<int> state{1};
     std::atomic<long long> frames{0};
     std::atomic<int> totalMs{0};
+    std::atomic<int> seekMs{0};          // накопленная просьба о перемотке, мс
 };
 
 static Player* g_pl = nullptr;
@@ -248,6 +268,20 @@ static void* audio_main(void* arg)
     P->state = ok ? 2 : 3;
     bool done = !ok;
     while (!P->stop) {
+        int sk = P->seekMs.exchange(0);
+        if (sk != 0) {
+            double cur = (double)P->frames / 48000.0 + sk / 1000.0;
+            double hi = src->total > 1.0 ? src->total - 0.5 : 1e9;
+            if (cur < 0) cur = 0;
+            if (cur > hi) cur = hi;
+            if (src->seek(cur)) {
+                rs.frac = 0; rs.bn = rs.bp = 0; rs.eof = false;
+                done = !rs.start();
+                P->frames = (long long)(cur * 48000.0);
+                if (!done) P->state = 2;
+            }
+            continue;
+        }
         if (P->paused || done) {
             memset(g_out, 0, sizeof(g_out));
             sceAudioOutOutput(h, g_out);
@@ -298,6 +332,7 @@ void audio_stop()
     g_pl = nullptr;
 }
 
+void audio_seek(int deltaMs) { if (g_pl && (g_pl->state == 2 || g_pl->state == 3)) g_pl->seekMs += deltaMs; }
 void audio_pause_toggle() { if (g_pl) g_pl->paused = g_pl->paused ? 0 : 1; }
 bool audio_paused() { return g_pl && g_pl->paused; }
 int audio_state() { return g_pl ? (int)g_pl->state : 0; }

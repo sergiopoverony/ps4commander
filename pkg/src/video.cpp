@@ -203,7 +203,34 @@ void cb_free_tex(void*, void* mem)
 
 // ---------------------------------------------------------------- чтение файла из службы
 
-struct FileCtx { std::string path; std::atomic<unsigned long long> size{ 0 }; };
+// Сетевое чтение выполняет отдельный собственный поток; поток плеера только ставит запрос и ждёт ответ
+// (так сокеты не используются из внутренних потоков библиотеки, а данные копируются в её буфер уже готовыми).
+struct FileCtx {
+    std::string path;
+    std::atomic<unsigned long long> size{ 0 };
+    std::atomic<int> state{ 0 };          // 0 - свободно, 1 - запрос ждёт, 2 - готово
+    std::atomic<int> quit{ 0 };
+    unsigned long long reqPos = 0;
+    unsigned reqLen = 0;
+    long result = -1;
+    std::vector<unsigned char> data;
+    OrbisPthreadMutex mu;                 // один запрос за раз
+    OrbisPthread th;
+    bool thValid = false;
+};
+
+void* reader_main(void* arg)
+{
+    FileCtx* c = (FileCtx*)arg;
+    while (!c->quit) {
+        if (c->state == 1) {
+            c->data.resize(c->reqLen);
+            c->result = service_read_range(c->path, c->reqPos, c->reqLen, c->data.data(), NULL);
+            c->state = 2;
+        } else sceKernelUsleep(500);
+    }
+    return NULL;
+}
 
 int32_t cb_open(void* p, const char* name)
 {
@@ -219,12 +246,19 @@ int32_t cb_read(void* p, uint8_t* buf, uint64_t pos, uint32_t len)
     unsigned long long sz = c->size.load();
     if (sz && pos >= sz) return 0;
     if (sz && pos + len > sz) len = (uint32_t)(sz - pos);
-    for (int attempt = 0; attempt < 3; attempt++) {
-        long n = service_read_range(c->path, pos, len, buf, NULL);
-        if (n >= 0) return (int32_t)n;
+    static std::atomic<int> failLogs{ 0 };
+    scePthreadMutexLock(&c->mu);
+    int32_t ret = -1;
+    for (int attempt = 0; attempt < 3 && ret < 0 && !c->quit; attempt++) {
+        c->reqPos = pos; c->reqLen = len; c->result = -1;
+        c->state = 1;
+        for (int i = 0; i < 40000 && c->state != 2 && !c->quit; i++) sceKernelUsleep(500);   // до 20 с
+        if (c->state == 2 && c->result >= 0) { memcpy(buf, c->data.data(), (size_t)c->result); ret = (int32_t)c->result; }
+        c->state = 0;
     }
-    logf_("video: read failed at %llu len %u", (unsigned long long)pos, len);
-    return -1;
+    scePthreadMutexUnlock(&c->mu);
+    if (ret < 0 && failLogs++ < 5) logf_("video: read failed at %llu len %u", (unsigned long long)pos, len);
+    return ret;
 }
 
 // ---------------------------------------------------------------- сессия
@@ -252,9 +286,20 @@ alignas(256) int16_t g_aout[1024 * 2];
 
 void sleep_ms(int ms) { sceKernelUsleep((unsigned)ms * 1000u); }
 
+void* video_main_inner(Session* S);
+
 void* video_main(void* arg)
 {
     Session* S = (Session*)arg;
+    void* r = video_main_inner(S);
+    S->file.quit = 1;
+    if (S->file.thValid) scePthreadJoin(S->file.th, NULL);
+    S->file.thValid = false;
+    return r;
+}
+
+void* video_main_inner(Session* S)
+{
     mem_init();
     if (!load_api()) { S->err = g_loadErr; S->state = 4; return NULL; }
 
@@ -264,6 +309,15 @@ void* video_main(void* arg)
     long pr = service_read_range(S->path, 0, 1, probe, &total);
     if (pr < 0 || total == 0) { S->err = "noconn"; S->state = 4; return NULL; }
     S->file.size = total;
+    S->file.path = S->path;
+    scePthreadMutexInit(&S->file.mu, NULL, "pc_avrd");
+    {
+        OrbisPthreadAttr ra;
+        scePthreadAttrInit(&ra);
+        scePthreadAttrSetstacksize(&ra, 1024 * 1024);
+        S->file.thValid = scePthreadCreate(&S->file.th, &ra, reader_main, &S->file, "pc_avread") == 0;
+        scePthreadAttrDestroy(&ra);
+    }
     logf_("video: file '%s' size %llu", S->path.c_str(), total);
 
     AvInit init;
