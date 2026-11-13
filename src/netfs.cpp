@@ -166,8 +166,8 @@ extern "C" {
 namespace {
 
 /* Offsets of the fusefs patch, per firmware: itemzflow's (LightningMods/Itemzflow,
- * itemz-daemon/source/fuse.c), converted one for one. 13.52 and 6.72 are tested on a
- * console; the others are what itemzflow ships, marked experimental (nas_fw_tested). */
+ * itemz-daemon/source/fuse.c), converted one for one. 13.52, 13.02 and 6.72 are tested on
+ * a console; the others are what itemzflow ships and are not tried here. */
 #define KBASE_OFF 0x1C0
 #define NPOKE 16
 
