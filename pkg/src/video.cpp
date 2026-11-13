@@ -175,7 +175,7 @@ void* cb_alloc_tex(void*, uint32_t align, uint32_t size)
     size_t sz = (size + al - 1) & ~(al - 1);
     off_t phys = 0;
     void* addr = NULL;
-    int r = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), sz, al, 3, &phys);
+    int r = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), sz, al, 0 /* WB_ONION: кэшируемая для CPU; тип 3 (WC_GARLIC) читается очень медленно */, &phys);
     if (r == 0) {
         r = sceKernelMapDirectMemory(&addr, sz, 0x33, 0, phys, al);
         if (r == 0 && addr) {
@@ -687,6 +687,7 @@ void* vdec_main(void* arg)
     Session* S = (Session*)arg;
     std::vector<uint32_t> out;
     std::vector<int> xs;
+    std::vector<uint8_t> frameCopy;
     bool logged = false;
     int frames = 0;
     uint64_t t0 = sceKernelGetProcessTime(), convUs = 0;
@@ -709,8 +710,13 @@ void* vdec_main(void* arg)
         if (pitch < W) pitch = W;
         // width/height совпадают с размерами потока; поля обрезки в этой версии структуры ненадёжны - не используем.
         uint32_t codedH = (H + 15) & ~15u;                 // плоскость яркости занимает выровненную по 16 высоту
-        const uint8_t* Y = (const uint8_t*)f->data;
-        const uint8_t* C = Y + (size_t)pitch * codedH;
+        // Сначала целиком копируем кадр в обычную память: чтение декодерной памяти байт за байтом было в сотни раз медленнее
+        // (около 500 мс на кадр 720p в логе) и кадр мог переиспользоваться декодером во время перевода в RGB.
+        size_t lumaBytes = (size_t)pitch * codedH, chromaBytes = (size_t)pitch * ((H + 1) / 2);
+        frameCopy.resize(lumaBytes + chromaBytes);
+        memcpy(frameCopy.data(), f->data, lumaBytes + chromaBytes);
+        const uint8_t* Y = frameCopy.data();
+        const uint8_t* C = Y + lumaBytes;
 
         uint64_t c0 = sceKernelGetProcessTime();
         double k = std::min(1600.0 / W, 900.0 / H);
