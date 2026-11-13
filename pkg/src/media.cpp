@@ -240,7 +240,7 @@ static void* audio_main(void* arg)
     P->totalMs = (int)(src->total * 1000.0);
 
     sceAudioOutInit();
-    int h = sceAudioOutOpen((OrbisUserServiceUserId)P->userId, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    int h = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
     if (h < 0) { logf_("audio: sceAudioOutOpen failed 0x%08X", (unsigned)h); P->state = 4; delete src; return NULL; }
 
     Resampler rs; rs.src = src; rs.step = (double)src->rate / 48000.0;

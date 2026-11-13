@@ -5,6 +5,8 @@
 #include <orbis/libkernel.h>
 #include <orbis/UserService.h>
 #include <orbis/AudioOut.h>
+#include <orbis/Sysmodule.h>
+#include <string.h>
 
 #include <algorithm>
 #include <atomic>
@@ -93,9 +95,31 @@ bool load_api()
 {
     if (g_apiTried) return g_api.ok;
     g_apiTried = true;
-    uint32_t mod = sceKernelLoadStartModule("/system/common/lib/libSceAvPlayer.sprx", 0, NULL, 0, NULL, NULL);
-    logf_("video: LoadStartModule(libSceAvPlayer) = 0x%08X", mod);
-    if ((int32_t)mod < 0) { g_loadErr = "module"; return false; }
+    // Приложение (не payload) грузит системные модули через sceSysmodule, прямой путь в /system ему недоступен.
+    int sr = sceSysmoduleLoadModule(ORBIS_SYSMODULE_AV_PLAYER);
+    logf_("video: sceSysmoduleLoadModule(AV_PLAYER) = 0x%08X", (unsigned)sr);
+    uint32_t mod = 0;
+    bool have = false;
+    {
+        OrbisKernelModule ids[256];
+        size_t num = 0;
+        int lr = sceKernelGetModuleList(ids, 256, &num);
+        logf_("video: module list ret=0x%08X count=%d", (unsigned)lr, (int)num);
+        for (size_t i = 0; i < num && i < 256; i++) {
+            OrbisKernelModuleInfo info;
+            memset(&info, 0, sizeof(info));
+            info.size = sizeof(info);
+            if (sceKernelGetModuleInfo(ids[i], &info) != 0) continue;
+            logf_("video: module %d: %s", (int)ids[i], info.name);
+            if (strstr(info.name, "AvPlayer")) { mod = (uint32_t)ids[i]; have = true; }
+        }
+    }
+    if (!have) {
+        mod = sceKernelLoadStartModule("/system/common/lib/libSceAvPlayer.sprx", 0, NULL, 0, NULL, NULL);
+        logf_("video: LoadStartModule(libSceAvPlayer) = 0x%08X", mod);
+        if ((int32_t)mod < 0) { g_loadErr = "module"; return false; }
+    }
+    logf_("video: libSceAvPlayer module id = %d", (int)mod);
     SymDef defs[] = {
         { "sceAvPlayerInit", "aS66RI0gGgo", (void**)&g_api.init },
         { "sceAvPlayerAddSource", "KMcEa+rHsIo", (void**)&g_api.addSource },
@@ -330,7 +354,7 @@ void* video_main(void* arg)
         if (aEn) {
             if (ao < 0) {
                 sceAudioOutInit();
-                ao = sceAudioOutOpen((OrbisUserServiceUserId)S->userId, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+                ao = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
                 logf_("video: sceAudioOutOpen = 0x%08X", (unsigned)ao);
             }
             if (ao >= 0) {
