@@ -263,7 +263,11 @@ int32_t cb_read(void* p, uint8_t* buf, uint64_t pos, uint32_t len)
 
 // ---------------------------------------------------------------- сессия
 
+struct Session;
+void cb_event(void* p, int32_t ev, int32_t srcId, void* data);
+
 struct Session {
+    std::atomic<int> ready{ 0 };            // библиотека сообщила, что источник готов (StateReady)
     std::string path;
     int userId = 0;
     FileCtx file;
@@ -275,6 +279,13 @@ struct Session {
     void* player = nullptr;
     std::string err;
 };
+void cb_event(void* p, int32_t ev, int32_t srcId, void*)
+{
+    Session* S = (Session*)p;
+    logf_("video: event %d src %d", (int)ev, (int)srcId);
+    if (S && ev == 2) S->ready = 1;
+}
+
 Session* g_s = nullptr;
 OrbisPthread g_th;
 bool g_thValid = false;
@@ -324,7 +335,7 @@ void* video_main_inner(Session* S)
     memset(&init, 0, sizeof(init));
     init.mem = { NULL, cb_alloc, cb_free, cb_alloc_tex, cb_free_tex };
     init.file = { &S->file, cb_open, cb_close, cb_read, cb_size };
-    init.event = { NULL, NULL };
+    init.event = { S, (void*)cb_event };
     init.debugLevel = 0;
     init.basePriority = 700;
     init.numFrameBuffers = 3;
@@ -348,7 +359,12 @@ void* video_main_inner(Session* S)
     logf_("video: streams = %d", n);
     if (n <= 0 && !S->stop) { S->err = "nostreams"; S->state = 4; g_api.stop(h); g_api.close(h); S->player = nullptr; return NULL; }
 
+    // Стримы включаем, когда библиотека готова (событие StateReady); если событие не пришло - всё равно пробуем,
+    // а неудачные включения повторяем: сразу после разбора файла библиотека иногда отвечает ошибкой 0x806A0002.
+    for (int i = 0; i < 100 && !S->ready && !S->stop; i++) sleep_ms(50);
+    logf_("video: ready=%d", (int)S->ready.load());
     bool vEn = false, aEn = false;
+    bool vTried = false, aTried = false;
     for (int i = 0; i < n && !S->stop; i++) {
         alignas(16) unsigned char raw[256];
         memset(raw, 0, sizeof(raw));
@@ -356,19 +372,22 @@ void* video_main_inner(Session* S)
         AvStreamInfo* si = (AvStreamInfo*)raw;
         logf_("video: stream %d: ret=0x%08X type=%u duration=%llu ms", i, (unsigned)gr, si->type, (unsigned long long)si->duration);
         if (gr < 0) continue;
-        if (si->type == 0 && !vEn) {
-            uint32_t w = *(uint32_t*)&si->details[0], hh = *(uint32_t*)&si->details[4];
-            logf_("video: video stream %ux%u", w, hh);
-            int er = g_api.enable(h, (uint32_t)i); vEn = er >= 0; S->hasVideo = vEn ? 1 : 0;
-            logf_("video: enable video = 0x%08X", (unsigned)er);
-            if (si->duration) S->durMs = (long long)si->duration;
-        } else if (si->type == 1 && !aEn) {
-            logf_("video: audio stream channels=%u rate=%u", (unsigned)*(uint16_t*)&si->details[0], *(uint32_t*)&si->details[4]);
-            int er = g_api.enable(h, (uint32_t)i); aEn = er >= 0;
-            logf_("video: enable audio = 0x%08X", (unsigned)er);
-            if (si->duration && !S->durMs) S->durMs = (long long)si->duration;
+        bool isV = si->type == 0 && !vTried, isA = si->type == 1 && !aTried;
+        if (!isV && !isA) continue;
+        if (isV) { vTried = true; logf_("video: video stream %ux%u", *(uint32_t*)&si->details[0], *(uint32_t*)&si->details[4]); }
+        else { aTried = true; logf_("video: audio stream channels=%u rate=%u", (unsigned)*(uint16_t*)&si->details[0], *(uint32_t*)&si->details[4]); }
+        if (si->duration && (isV || !S->durMs)) S->durMs = (long long)si->duration;
+        int er = -1;
+        for (int t = 0; t < 40 && !S->stop; t++) {
+            er = g_api.enable(h, (uint32_t)i);
+            if (er >= 0) { logf_("video: enable stream %d ok (try %d)", i, t + 1); break; }
+            if (t == 0) logf_("video: enable stream %d = 0x%08X, retrying", i, (unsigned)er);
+            sleep_ms(250);
         }
+        if (er < 0) logf_("video: enable stream %d failed for good (0x%08X)", i, (unsigned)er);
+        if (isV) { vEn = er >= 0; S->hasVideo = vEn ? 1 : 0; } else aEn = er >= 0;
     }
+    if (!vEn && !aEn && !S->stop) { S->err = "enable"; S->state = 4; g_api.stop(h); g_api.close(h); S->player = nullptr; return NULL; }
     sleep_ms(100);
     if (!g_api.isActive(h)) { int sr = g_api.start(h); logf_("video: sceAvPlayerStart = 0x%08X", (unsigned)sr); }
     S->state = 2;
