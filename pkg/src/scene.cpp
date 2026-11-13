@@ -157,6 +157,22 @@ void Scene2D::FillRect(int x, int y, int w, int h, Color color)
     }
 }
 
+void Scene2D::BlitRGB(int x, int y, int w, int h, const uint32_t* rgb)
+{
+    int sx0 = 0, sy0 = 0, cw = w, ch = h;
+    if (x < 0) { sx0 = -x; cw += x; x = 0; }
+    if (y < 0) { sy0 = -y; ch += y; y = 0; }
+    if (x + cw > width) cw = width - x;
+    if (y + ch > height) ch = height - y;
+    if (cw <= 0 || ch <= 0) return;
+    uint32_t* base = (uint32_t*)frameBuffers[activeFrameBufferIdx];
+    for (int yy = 0; yy < ch; yy++) {
+        const uint32_t* src = rgb + (size_t)(sy0 + yy) * w + sx0;
+        uint32_t* dst = base + (size_t)(y + yy) * width + x;
+        for (int xx = 0; xx < cw; xx++) dst[xx] = 0x80000000u | src[xx];
+    }
+}
+
 bool Scene2D::InitFont(FT_Face* face, const char* fontPath, int fontSize)
 {
     int rc = FT_New_Face(ftLib, fontPath, 0, face);

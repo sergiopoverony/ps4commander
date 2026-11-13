@@ -237,8 +237,8 @@
   "e_noconn": "Service not responding",
   "hint_imgnav": "previous / next",
   "imgErr": "Cannot display this image (PNG, JPG, BMP, GIF only)",
-  "noVideo": "Video playback is not supported in the app. Open the web interface (port 8484) in a browser.",
-  "noFormat": "This audio format is not supported in the app (MP3, OGG, WAV only).",
+  "noVideo": "This video format is not supported by the console player (MP4, M4V, MOV only).",
+  "noFormat": "This audio format is not supported in the app (MP3, OGG, WAV, M4A, AAC only).",
   "audioTitle": "Player",
   "audioPlaying": "Playing",
   "audioPaused": "Paused",
@@ -246,5 +246,6 @@
   "audioErr": "Cannot play this file",
   "hint_pause": "pause / play",
   "hint_stop": "stop",
-  "appTooBig": "File is too large for the app (limit 32 MB)"
+  "appTooBig": "File is too large for the app (limit 32 MB)",
+  "videoErr": "Cannot play this file"
 }

@@ -75,6 +75,10 @@ bool service_view(const std::string& path, int64_t maxLen, std::string& data, st
 // Целиком скачивает файл из службы (/api/download?inline=1) в память - для картинок и музыки (до 32 МБ).
 bool service_download(const std::string& path, std::string& data, std::string& err);
 
+// Чтение куска файла из службы (HTTP Range) - для потокового видео. Возвращает число байт, 0 - за концом, -1 - ошибка.
+// total (если не NULL) - полный размер файла.
+long service_read_range(const std::string& path, unsigned long long off, unsigned len, unsigned char* dst, unsigned long long* total = nullptr);
+
 // Отправляет ELF из PKG (/app0/assets/misc/ps4commander.elf) в BinLoader (127.0.0.1:9090).
 bool service_send_payload(std::string& err, bool* connectFailed = nullptr);
 

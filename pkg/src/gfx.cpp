@@ -197,20 +197,7 @@ std::vector<std::string> wrap_lines(const std::string& s, int maxc)
 
 void fill(int x, int y, int w, int h, Color c) { g_scene->FillRect(x, y, w, h, c); }
 
-void gfx_blit(int x, int y, int w, int h, const uint32_t* rgb)
-{
-    for (int yy = 0; yy < h; yy++) {
-        int py = y + yy;
-        if (py < 0 || py >= FRAME_HEIGHT) continue;
-        for (int xx = 0; xx < w; xx++) {
-            int px = x + xx;
-            if (px < 0 || px >= FRAME_WIDTH) continue;
-            uint32_t v = rgb[(size_t)yy * w + xx];
-            Color c = { (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v };
-            g_scene->PutPixel(px, py, c);
-        }
-    }
-}
+void gfx_blit(int x, int y, int w, int h, const uint32_t* rgb) { g_scene->BlitRGB(x, y, w, h, rgb); }
 
 void fill_rounded(int x, int y, int w, int h, int r, Color c)
 {

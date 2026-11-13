@@ -37,6 +37,9 @@ public:
         fb[y * width + x] = 0x80000000u + ((uint32_t)c.r << 16) + ((uint32_t)c.g << 8) + c.b;
     }
 
+    // Быстрый вывод готовой картинки 0x00RRGGBB (w*h) в точку (x,y) с обрезкой по границам экрана.
+    void BlitRGB(int x, int y, int w, int h, const uint32_t* rgb);
+
 private:
     int width;
     int height;

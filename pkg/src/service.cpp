@@ -258,6 +258,11 @@ bool service_download(const std::string& path, std::string& data, std::string& e
     return true;
 }
 
+long service_read_range(const std::string& path, unsigned long long off, unsigned len, unsigned char* dst, unsigned long long* total)
+{
+    return http_read_range(SERVICE_HOST, SERVICE_PORT, "/api/download?inline=1&path=" + urlenc(path), off, len, dst, 15000, total);
+}
+
 bool service_send_payload(std::string& err, bool* connectFailed)
 {
     if (connectFailed) *connectFailed = false;

@@ -7,6 +7,7 @@
 #include "async.h"
 #include "image.h"
 #include "media.h"
+#include "video.h"
 #include "i18n.h"
 #include "log.h"
 
@@ -236,7 +237,7 @@ static Svc g_svc = S_CHECK;
 static std::string g_svcErr;
 static volatile int g_svcStage = 0;       // 0 - ищем службу, 1 - запускаем через BinLoader
 
-enum Focus { F_IMAGE, F_AUDIO, F_PANEL, F_BAR, F_MENU, F_CTX, F_CONFIRM, F_TEXT, F_PROGRESS, F_PKGQ, F_DONATE, F_PICK, F_SMBLIST, F_SMBEDIT };
+enum Focus { F_IMAGE, F_AUDIO, F_VIDEO, F_PANEL, F_BAR, F_MENU, F_CTX, F_CONFIRM, F_TEXT, F_PROGRESS, F_PKGQ, F_DONATE, F_PICK, F_SMBLIST, F_SMBEDIT };
 static Focus g_focus = F_PANEL;
 static std::vector<Focus> g_fstack;
 static void focus_push(Focus f) { g_fstack.push_back(g_focus); g_focus = f; redraw(); }
@@ -496,7 +497,8 @@ static std::string ext_of(const std::string& n)
 static bool in_list(const std::string& e, std::initializer_list<const char*> l) { for (auto s : l) if (e == s) return true; return false; }
 static bool is_image_ext(const std::string& e) { return in_list(e, { "png", "jpg", "jpeg", "bmp", "gif" }); }
 static bool is_audio_ext(const std::string& e) { return in_list(e, { "mp3", "ogg", "wav" }); }
-static bool is_audio_unsupported(const std::string& e) { return in_list(e, { "flac", "m4a", "aac", "wma", "opus", "mid", "midi", "ac3", "at9" }); }
+static bool is_av_ext(const std::string& e) { return in_list(e, { "mp4", "m4v", "mov", "3gp", "m4a", "aac" }); }   // системный плеер консоли
+static bool is_audio_unsupported(const std::string& e) { return in_list(e, { "flac", "wma", "opus", "mid", "midi", "ac3", "at9" }); }
 static bool is_video_ext(const std::string& e) { return in_list(e, { "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "wmv", "flv", "mpg", "mpeg", "3gp" }); }
 static const int64_t MEDIA_MAX = 32LL * 1024 * 1024 - 4096;    // службу читаем целиком в память, потолок ответа 32 МБ
 
@@ -587,6 +589,12 @@ static void open_file(int pi, bool viaCross)
     if (media && e->type == 'f' && e->size > MEDIA_MAX) { text_open(name, tr("appTooBig", "File is too large for the app (limit 32 MB)"), true); return; }
     if (is_image_ext(ext)) { img_open(pi); return; }
     if (is_audio_ext(ext)) { audio_open(path, name, ext); return; }
+    if (is_av_ext(ext)) {
+        if (!video_open(path, g_userId)) { text_open(name, tr("audioErr", "Cannot play this file"), true); return; }
+        g_au.name = name;
+        focus_push(F_VIDEO);
+        return;
+    }
     if (is_video_ext(ext)) { text_open(name, tr("noVideo", "Video playback is not supported in the app. Open the web interface (port 8484) in a browser."), true); return; }
     if (is_audio_unsupported(ext)) { text_open(name, tr("noFormat", "This audio format is not supported in the app (MP3, OGG, WAV only)."), true); return; }
     view_text(path, name);
@@ -1329,6 +1337,33 @@ static void draw_audio()
     dlg_hint(x, y, w, h, "{cross} " + tr("hint_pause", "pause / play") + "          {circle} " + tr("hint_stop", "stop"));
 }
 
+static void draw_video()
+{
+    Color blk = Color{ 0, 0, 0 }, dim = Color{ 190, 190, 190 };
+    fill(0, 0, FRAME_WIDTH, FRAME_HEIGHT, blk);
+    int st = video_state();
+    const Picture& pic = video_picture();
+    if (!pic.px.empty()) gfx_blit((FRAME_WIDTH - pic.w) / 2, (940 - pic.h) / 2, pic.w, pic.h, pic.px.data());
+    std::string msg;
+    Color mc = dim;
+    if (st == 1) msg = tr("loading", "Loading...");
+    else if (st == 4) { msg = tr("videoErr", "Cannot play this file") + " [" + video_error() + "]"; mc = Color{ 255, 120, 120 }; }
+    else if (st == 3) msg = tr("audioDone", "Finished");
+    else if (pic.px.empty() && st == 2) msg = video_has_video() ? tr("loading", "Loading...") : tr("audioPlaying", "Playing");
+    if (!msg.empty()) put_center(FRAME_WIDTH / 2, msg, 480, mc, blk);
+
+    // нижняя панель: имя, время, полоска, подсказка
+    double pos = video_seconds(), tot = video_total();
+    std::string tm = fmt_time(pos) + (tot > 0 ? " / " + fmt_time(tot) : "");
+    if (video_paused()) tm += "   " + tr("audioPaused", "Paused");
+    draw_text(fit(g_au.name, 100), 60, 986, dim, blk);
+    draw_text(tm, FRAME_WIDTH - 60 - count_cp(tm) * cell_w(), 986, dim, blk);
+    int bx = 60, bw = FRAME_WIDTH - 120;
+    fill(bx, 998, bw, 8, Color{ 70, 70, 70 });
+    if (tot > 0) fill(bx, 998, std::max(4, (int)(bw * std::min(1.0, pos / tot))), 8, Color{ 138, 180, 255 });
+    put_center_rich(FRAME_WIDTH / 2, "{cross} " + tr("hint_pause", "pause / play") + "     {arrows} -10 / +10 s     {circle} " + tr("hint_stop", "stop"), 1050, dim, blk);
+}
+
 static void draw_donate()
 {
     int w = 700, h = 580;
@@ -1450,6 +1485,7 @@ static void draw_all()
     case F_DONATE: draw_donate(); break;
     case F_IMAGE: draw_image(); break;
     case F_AUDIO: draw_audio(); break;
+    case F_VIDEO: draw_video(); break;
     case F_PICK: draw_pick(); break;
     case F_SMBLIST: draw_smb_list(); break;
     case F_SMBEDIT: draw_smb_edit(); break;
@@ -1688,7 +1724,9 @@ void ui_pump()
     poll_progress(now);
     // индикатор загрузки и прогресс обновляем и без нажатий
     static uint64_t lastTick = 0;
-    if (now - lastTick >= 150000ULL && (g_busy > 0 || g_panels[0].loading || g_panels[1].loading || g_svc != S_READY || g_focus == F_AUDIO || (g_focus == F_IMAGE && g_iv.loading))) { lastTick = now; redraw(); }
+    if (now - lastTick >= 150000ULL && (g_busy > 0 || g_panels[0].loading || g_panels[1].loading || g_svc != S_READY || g_focus == F_AUDIO || g_focus == F_VIDEO || (g_focus == F_IMAGE && g_iv.loading))) { lastTick = now; redraw(); }
+
+    if (g_focus == F_VIDEO && video_poll_frame()) redraw();
 
     if (g_svc != S_READY) {
         if (g_svc == S_FAILED) { if (cross) svc_begin(); else if (circle) exit(0); }
@@ -1713,6 +1751,14 @@ void ui_pump()
         else if ((left || l1 || l2) && g_iv.idx > 0) img_load(g_iv.idx - 1);
         break;
     }
+    case F_VIDEO:
+        if (cross) video_pause_toggle();
+        else if (circle) { video_close(); focus_pop(); }
+        else if (left) video_seek(-10000);
+        else if (right) video_seek(10000);
+        else if (l2) video_seek(-60000);
+        else if (r2) video_seek(60000);
+        break;
     case F_AUDIO:
         if (cross) audio_pause_toggle();
         else if (circle) { audio_stop(); focus_pop(); }
