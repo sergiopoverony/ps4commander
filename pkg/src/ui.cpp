@@ -822,7 +822,7 @@ static const MenuItem MENU[M_COUNT] = {
     { M_PKGQ, "pkgQueue", "Installation queue" }, { M_RENAME, "rename", "Rename" }, { M_ROOTS, "roots", "Go to..." },
     { M_SMB, "smbTitle", "Network folders (SMB)" }, { M_LOG, "logTitle", "Log" }, { M_SUPPORT, "support", "Support the project" },
     { M_HELP, "help", "Help" }, { M_UNSAFE, "unsafeBtn", "Allow changes in system areas" },
-    { M_APPEXIT, "appExit", "Exit" }, { M_QUIT, "quit", "Quit" }, { M_CLOSE, "close", "Close" }
+    { M_APPEXIT, "menuAppExit", "Close the app" }, { M_QUIT, "menuStopSvc", "Stop the service and exit" }, { M_CLOSE, "close", "Close" }
 };
 
 static std::string theme_name(const std::string& th)
@@ -851,6 +851,16 @@ static void cycle_lang()
 
 static void set_unsafe(bool on) { g_unsafe = on; service_set_unsafe(on); redraw(); }
 
+// Выход из приложения: останавливаем звук/видео и завершаем процесс без запуска деструкторов статических
+// объектов (рабочие потоки ещё живы и обращаются к ним - так выход заканчивался аварией).
+static void app_exit()
+{
+    audio_stop();
+    video_close();
+    logf_("ui: exit");
+    _exit(0);
+}
+
 static void menu_run(MenuId id)
 {
     switch (id) {
@@ -874,10 +884,10 @@ static void menu_run(MenuId id)
         focus_push(F_DONATE);
         break;
     case M_HELP: text_open(tr("helpTitle", "Keys"), tr("helpPad", "")); break;
-    case M_APPEXIT: exit(0); break;
+    case M_APPEXIT: app_exit(); break;
     case M_QUIT:
-        confirm_open(tr("quit", "Quit"), tr("quitQ", "Shut down ps4commander?"), tr("quit", "Quit"), []() {
-            act_async([](std::string&) { service_quit(); return true; }, []() { exit(0); });
+        confirm_open(tr("menuStopSvc", "Stop the service and exit"), tr("quitQ", "Shut down ps4commander?"), tr("quit", "Quit"), []() {
+            act_async([](std::string&) { service_quit(); return true; }, []() { app_exit(); });
         });
         break;
     default: break;
@@ -1729,7 +1739,7 @@ void ui_pump()
     if (g_focus == F_VIDEO && video_poll_frame()) redraw();
 
     if (g_svc != S_READY) {
-        if (g_svc == S_FAILED) { if (cross) svc_begin(); else if (circle) exit(0); }
+        if (g_svc == S_FAILED) { if (cross) svc_begin(); else if (circle) app_exit(); }
         goto present;
     }
 

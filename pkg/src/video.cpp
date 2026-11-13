@@ -214,6 +214,9 @@ struct FileCtx {
     unsigned reqLen = 0;
     long result = -1;
     std::vector<unsigned char> data;
+    struct Slot { unsigned long long start = 0; std::vector<unsigned char> data; unsigned long long stamp = 0; };
+    Slot slots[4];                        // кэш недавно прочитанных кусков (по 2 МБ): сеть/SMB медленно отвечают на мелкие запросы
+    unsigned long long tick = 0;
     OrbisPthreadMutex mu;                 // один запрос за раз
     OrbisPthread th;
     bool thValid = false;
@@ -249,11 +252,35 @@ int32_t cb_read(void* p, uint8_t* buf, uint64_t pos, uint32_t len)
     static std::atomic<int> failLogs{ 0 };
     scePthreadMutexLock(&c->mu);
     int32_t ret = -1;
+    // 1) из кэша
+    for (auto& s : c->slots) {
+        if (!s.data.empty() && pos >= s.start && pos + len <= s.start + s.data.size()) {
+            memcpy(buf, s.data.data() + (pos - s.start), len);
+            s.stamp = ++c->tick;
+            scePthreadMutexUnlock(&c->mu);
+            return (int32_t)len;
+        }
+    }
+    // 2) промах: читаем кусок побольше и кладём в самый старый слот
+    unsigned want = std::max<unsigned>(len, 2u * 1024 * 1024);
+    if (sz && pos + want > sz) want = (unsigned)(sz - pos);
+    if (want < len) want = len;
     for (int attempt = 0; attempt < 3 && ret < 0 && !c->quit; attempt++) {
-        c->reqPos = pos; c->reqLen = len; c->result = -1;
+        c->reqPos = pos; c->reqLen = want; c->result = -1;
         c->state = 1;
         for (int i = 0; i < 40000 && c->state != 2 && !c->quit; i++) sceKernelUsleep(500);   // до 20 с
-        if (c->state == 2 && c->result >= 0) { memcpy(buf, c->data.data(), (size_t)c->result); ret = (int32_t)c->result; }
+        if (c->state == 2 && c->result >= 0) {
+            long got = c->result;
+            FileCtx::Slot* v = &c->slots[0];
+            for (auto& s : c->slots) if (s.stamp < v->stamp) v = &s;
+            v->data.swap(c->data);
+            v->data.resize((size_t)got);
+            v->start = pos;
+            v->stamp = ++c->tick;
+            unsigned n = (unsigned)std::min<long>(got, (long)len);
+            memcpy(buf, v->data.data(), n);
+            ret = (int32_t)n;
+        }
         c->state = 0;
     }
     scePthreadMutexUnlock(&c->mu);
@@ -289,15 +316,22 @@ void cb_event(void* p, int32_t ev, int32_t srcId, void*)
 Session* g_s = nullptr;
 OrbisPthread g_th;
 bool g_thValid = false;
-Picture g_pic;
-std::vector<uint32_t> g_scratch;
-bool g_loggedFrame = false;
+Picture g_pic;                    // то, что рисует главный поток
+Picture g_back;                   // готовый кадр от потока декодирования (под мьютексом)
+OrbisPthreadMutex g_picMu;
+bool g_picMuInit = false;
+std::atomic<int> g_newFrame{ 0 };
+OrbisPthread g_vth;
+bool g_vthValid = false;
+std::atomic<int> g_vstop{ 0 };
 
 alignas(256) int16_t g_aout[1024 * 2];
 
 void sleep_ms(int ms) { sceKernelUsleep((unsigned)ms * 1000u); }
 
 void* video_main_inner(Session* S);
+
+void* vdec_main(void* arg);
 
 void* video_main(void* arg)
 {
@@ -389,6 +423,15 @@ void* video_main_inner(Session* S)
     sleep_ms(100);
     { int sr = g_api.start(h); logf_("video: sceAvPlayerStart = 0x%08X, active=%d", (unsigned)sr, (int)g_api.isActive(h)); }
     S->state = 2;
+    if (S->hasVideo) {
+        if (!g_picMuInit) { g_picMuInit = true; scePthreadMutexInit(&g_picMu, NULL, "pc_pic"); }
+        g_vstop = 0; g_newFrame = 0;
+        OrbisPthreadAttr va;
+        scePthreadAttrInit(&va);
+        scePthreadAttrSetstacksize(&va, 1024 * 1024);
+        g_vthValid = scePthreadCreate(&g_vth, &va, vdec_main, S, "pc_vdec") == 0;
+        scePthreadAttrDestroy(&va);
+    }
 
     // --- звук: забираем PCM у плеера и отдаём в AudioOut (48 кГц, стерео)
     int ao = -1;
@@ -449,10 +492,14 @@ void* video_main_inner(Session* S)
         }
     }
     logf_("video: stopping");
+    g_vstop = 1;
+    if (g_vthValid) scePthreadJoin(g_vth, NULL);
+    g_vthValid = false;
     g_api.stop(h);
     if (ao >= 0) sceAudioOutClose(ao);
     g_api.close(h);
     S->player = nullptr;
+    sleep_ms(300);                         // дать внутренним потокам библиотеки завершиться
     return NULL;
 }
 
@@ -467,7 +514,8 @@ bool video_open(const std::string& path, int userId)
     g_s->path = path;
     g_s->userId = userId;
     g_pic = Picture();
-    g_loggedFrame = false;
+    g_back = Picture();
+    g_newFrame = 0;
     OrbisPthreadAttr attr;
     scePthreadAttrInit(&attr);
     scePthreadAttrSetstacksize(&attr, 2 * 1024 * 1024);
@@ -520,55 +568,93 @@ void video_seek(int deltaMs)
     logf_("video: jump to %lld ms = 0x%08X", cur, (unsigned)r);
 }
 
-// NV12 -> RGB с масштабированием "по ближайшему" под область 1600x900.
+// Главный поток только забирает готовый кадр.
 bool video_poll_frame()
 {
-    if (!g_s || g_s->state != 2 || !g_s->player || !g_s->hasVideo) return false;
-    alignas(16) unsigned char raw[sizeof(AvFrameEx) + 256];
-    memset(raw, 0, sizeof(raw));
-    AvFrameEx* f = (AvFrameEx*)raw;
-    if (!g_api.getVideoEx(g_s->player, f) || !f->data) return false;
-
-    uint32_t W = f->video.width, H = f->video.height, pitch = f->video.pitch;
-    if (!g_loggedFrame) {
-        g_loggedFrame = true;
-        logf_("video: first frame %ux%u pitch=%u crop L%u R%u T%u B%u bits=%u/%u full=%d framerate=%u data=%p",
-              W, H, pitch, f->video.cropL, f->video.cropR, f->video.cropT, f->video.cropB,
-              (unsigned)f->video.lumaBits, (unsigned)f->video.chromaBits, (int)f->video.fullRange, f->video.framerate, f->data);
-    }
-    if (W < 16 || H < 16 || W > 4096 || H > 4096) return false;
-    if (pitch < W) pitch = W;
-    uint32_t cl = f->video.cropL, cr = f->video.cropR, ct = f->video.cropT, cb = f->video.cropB;
-    if (cl + cr >= W || ct + cb >= H) { cl = cr = ct = cb = 0; }
-    uint32_t vw = W - cl - cr, vh = H - ct - cb;
-
-    const uint8_t* Y = (const uint8_t*)f->data;
-    const uint8_t* C = Y + (size_t)pitch * H;
-
-    double k = std::min(1600.0 / vw, 900.0 / vh);
-    if (k > 1.0) k = 1.0;
-    int dw = std::max(2, (int)(vw * k)) & ~1, dh = std::max(2, (int)(vh * k)) & ~1;
-    g_scratch.resize((size_t)dw * dh);
-    bool hd = vh >= 720;
-    int cRV = hd ? 459 : 409, cGU = hd ? 55 : 100, cGV = hd ? 136 : 208, cBU = hd ? 541 : 516;
-    bool full = f->video.fullRange;
-    for (int y = 0; y < dh; y++) {
-        uint32_t sy = ct + (uint32_t)((uint64_t)y * vh / dh);
-        const uint8_t* yr = Y + (size_t)sy * pitch;
-        const uint8_t* cr_ = C + (size_t)(sy >> 1) * pitch;
-        uint32_t* out = &g_scratch[(size_t)y * dw];
-        for (int x = 0; x < dw; x++) {
-            uint32_t sx = cl + (uint32_t)((uint64_t)x * vw / dw);
-            int yy = full ? ((int)yr[sx] * 256) : (((int)yr[sx] - 16) * 298);
-            int u = (int)cr_[sx & ~1u] - 128, v = (int)cr_[(sx & ~1u) + 1] - 128;
-            int R = (yy + cRV * v + 128) >> 8;
-            int G = (yy - cGU * u - cGV * v + 128) >> 8;
-            int B = (yy + cBU * u + 128) >> 8;
-            R = R < 0 ? 0 : R > 255 ? 255 : R; G = G < 0 ? 0 : G > 255 ? 255 : G; B = B < 0 ? 0 : B > 255 ? 255 : B;
-            out[x] = ((uint32_t)R << 16) | ((uint32_t)G << 8) | (uint32_t)B;
-        }
-    }
-    g_pic.w = dw; g_pic.h = dh;
-    g_pic.px.swap(g_scratch);
+    if (!g_s || g_s->state != 2 || !g_picMuInit || !g_newFrame.load()) return false;
+    scePthreadMutexLock(&g_picMu);
+    g_pic.px.swap(g_back.px);
+    g_pic.w = g_back.w; g_pic.h = g_back.h;
+    g_newFrame = 0;
+    scePthreadMutexUnlock(&g_picMu);
     return true;
 }
+
+namespace {
+
+// Поток декодирования: забирает кадры NV12 у плеера и переводит в RGB (масштаб "по ближайшему" под 1600x900).
+void* vdec_main(void* arg)
+{
+    Session* S = (Session*)arg;
+    std::vector<uint32_t> out;
+    std::vector<int> xs;
+    bool logged = false;
+    int frames = 0;
+    uint64_t t0 = sceKernelGetProcessTime(), convUs = 0;
+    while (!g_vstop && !S->stop) {
+        void* p = S->player;
+        if (!p) break;
+        alignas(16) unsigned char raw[sizeof(AvFrameEx) + 256];
+        memset(raw, 0, sizeof(raw));
+        AvFrameEx* f = (AvFrameEx*)raw;
+        if (!g_api.getVideoEx(p, f) || !f->data) { sleep_ms(3); continue; }
+
+        uint32_t W = f->video.width, H = f->video.height, pitch = f->video.pitch;
+        if (!logged) {
+            logged = true;
+            logf_("video: first frame %ux%u pitch=%u crop L%u R%u T%u B%u bits=%u/%u full=%d framerate=%u data=%p",
+                  W, H, pitch, f->video.cropL, f->video.cropR, f->video.cropT, f->video.cropB,
+                  (unsigned)f->video.lumaBits, (unsigned)f->video.chromaBits, (int)f->video.fullRange, f->video.framerate, f->data);
+        }
+        if (W < 16 || H < 16 || W > 4096 || H > 4096) continue;
+        if (pitch < W) pitch = W;
+        // width/height совпадают с размерами потока; поля обрезки в этой версии структуры ненадёжны - не используем.
+        uint32_t codedH = (H + 15) & ~15u;                 // плоскость яркости занимает выровненную по 16 высоту
+        const uint8_t* Y = (const uint8_t*)f->data;
+        const uint8_t* C = Y + (size_t)pitch * codedH;
+
+        uint64_t c0 = sceKernelGetProcessTime();
+        double k = std::min(1600.0 / W, 900.0 / H);
+        if (k > 1.0) k = 1.0;
+        int dw = std::max(2, (int)(W * k)) & ~1, dh = std::max(2, (int)(H * k)) & ~1;
+        out.resize((size_t)dw * dh);
+        xs.resize((size_t)dw);
+        for (int x = 0; x < dw; x++) xs[(size_t)x] = (int)((uint64_t)x * W / dw);
+        bool hd = H >= 720;
+        int cRV = hd ? 459 : 409, cGU = hd ? 55 : 100, cGV = hd ? 136 : 208, cBU = hd ? 541 : 516;
+        bool full = f->video.fullRange;
+        for (int y = 0; y < dh; y++) {
+            uint32_t sy = (uint32_t)((uint64_t)y * H / dh);
+            const uint8_t* yr = Y + (size_t)sy * pitch;
+            const uint8_t* cr_ = C + (size_t)(sy >> 1) * pitch;
+            uint32_t* o = &out[(size_t)y * dw];
+            for (int x = 0; x < dw; x++) {
+                int sx = xs[(size_t)x];
+                int yy = full ? ((int)yr[sx] * 256) : (((int)yr[sx] - 16) * 298);
+                int ci = sx & ~1;
+                int u = (int)cr_[ci] - 128, v = (int)cr_[ci + 1] - 128;
+                int R = (yy + cRV * v + 128) >> 8;
+                int G = (yy - cGU * u - cGV * v + 128) >> 8;
+                int B = (yy + cBU * u + 128) >> 8;
+                R = R < 0 ? 0 : R > 255 ? 255 : R; G = G < 0 ? 0 : G > 255 ? 255 : G; B = B < 0 ? 0 : B > 255 ? 255 : B;
+                o[x] = ((uint32_t)R << 16) | ((uint32_t)G << 8) | (uint32_t)B;
+            }
+        }
+        convUs += sceKernelGetProcessTime() - c0;
+        scePthreadMutexLock(&g_picMu);
+        g_back.px.swap(out);
+        g_back.w = dw; g_back.h = dh;
+        g_newFrame = 1;
+        scePthreadMutexUnlock(&g_picMu);
+        frames++;
+        uint64_t now = sceKernelGetProcessTime();
+        if (now - t0 >= 5000000ULL) {
+            logf_("video: %d frames in %.1f s, convert %.1f ms/frame", frames, (now - t0) / 1e6, frames ? convUs / 1000.0 / frames : 0.0);
+            frames = 0; convUs = 0; t0 = now;
+        }
+    }
+    return NULL;
+}
+
+} // namespace
+

@@ -247,5 +247,7 @@
   "hint_pause": "pause / play",
   "hint_stop": "stop",
   "appTooBig": "File is too large for the app (limit 32 MB)",
-  "videoErr": "Cannot play this file"
+  "videoErr": "Cannot play this file",
+  "menuAppExit": "Close the app",
+  "menuStopSvc": "Stop the service and exit"
 }
