@@ -18,6 +18,8 @@ struct Entry {
     int64_t mtime = 0;
     std::string perm;       // восьмеричные права, напр. "755"
     std::string link;       // цель ссылки, если type == 'l'
+    bool td = false;        // ссылка на папку (в вебе поле "td")
+    std::string user, group;   // владелец и группа ("u"/"g")
 };
 struct LsView {
     bool ok = false;
@@ -27,6 +29,10 @@ struct LsView {
     bool danger = false, trunc = false;
 };
 bool service_ls(const std::string& path, LsView& out);
+
+// Режим "разрешить изменения в системных областях" (флажок в меню веб-версии): добавляет
+// "unsafe":true в запросы mkdir/rename/копирования/удаления/chmod.
+void service_set_unsafe(bool on);
 
 // /api/roots - список точек монтирования для быстрого перехода; version - версия службы.
 struct RootView { std::string path; bool mnt = false, smb = false; };
@@ -59,6 +65,7 @@ bool service_pkg_cancel();
 // Состояние (тема, последние пути панелей) - /api/state.
 bool service_state_get(std::string& l, std::string& r, std::string& theme);
 bool service_state_set_theme(const std::string& theme);
+bool service_state_set_paths(const std::string& l, const std::string& r);   // запомнить папки панелей
 
 // Просмотр текстового файла (как /api/view, с ограничением длины - для экрана этого достаточно).
 bool service_view(const std::string& path, int64_t maxLen, std::string& data, std::string& err);
@@ -71,3 +78,22 @@ bool service_install_autorun(std::string& err);
 
 // POST /quit - просит службу завершиться.
 bool service_quit();
+
+// Поиск файлов в папке (как /api/find в вебе).
+struct FindHit { std::string path; char type = 'f'; int64_t size = 0; };
+struct FindResult { std::vector<FindHit> hits; long long scanned = 0; bool trunc = false; };
+bool service_find(const std::string& path, const std::string& q, FindResult& out, std::string& err);
+
+// Журнал службы (/api/log).
+bool service_log(int maxBytes, std::string& out);
+
+// Сетевые папки SMB (/api/smb*): список сохранённых подключений, поиск серверов, список шар,
+// сохранение и удаление - те же маршруты, что в диалоге SMB веб-версии.
+struct SmbConnView { std::string alias, host, share, user, domain; bool hasPass = false; };
+bool service_smb_list(std::vector<SmbConnView>& out, std::string& err);
+struct SmbScanView { bool running = false; long long done = 0, total = 0; std::vector<std::string> found; };
+bool service_smb_scan_start(std::string& err);          // err == "busy" - поиск уже идёт (не ошибка)
+bool service_smb_scan_state(SmbScanView& out);
+bool service_smb_shares(const SmbConnView& c, const std::string& pass, std::vector<std::string>& shares, std::string& err);
+bool service_smb_save(const SmbConnView& c, const std::string& pass, std::string& err);
+bool service_smb_del(const std::string& alias, std::string& err);

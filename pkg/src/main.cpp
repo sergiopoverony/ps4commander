@@ -26,7 +26,7 @@ int main()
 
     for (;;) {
         ui_pump();
-        sceKernelUsleep(30000);
+        sceKernelUsleep(16000);
     }
     return 0;
 }

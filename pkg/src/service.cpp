@@ -49,7 +49,11 @@ static std::string json_esc_pub(const std::string& s)
     return o;
 }
 
-static std::string json_path(const std::string& p) { return "{\"path\":\"" + json_esc_pub(p) + "\"}"; }
+static volatile bool g_unsafe = false;
+void service_set_unsafe(bool on) { g_unsafe = on; }
+static const char* unsafe_field() { return g_unsafe ? ",\"unsafe\":true" : ""; }
+
+static std::string json_path(const std::string& p) { return "{\"path\":\"" + json_esc_pub(p) + "\"" + unsafe_field() + "}"; }
 
 bool service_ls(const std::string& path, LsView& out)
 {
@@ -77,6 +81,9 @@ bool service_ls(const std::string& path, LsView& out)
         en.mtime = (int64_t)e["m"].asNum();
         en.perm = e["p"].asStr("644");
         en.link = e["l"].asStr();
+        en.td = e["td"].asBool();
+        en.user = e["u"].asStr();
+        en.group = e["g"].asStr();
         out.entries.push_back(en);
     }
     return true;
@@ -128,6 +135,7 @@ bool service_job_start(const std::string& op, const std::vector<std::string>& pa
     if (overwrite) b += ",\"overwrite\":true";
     if (recursive) b += ",\"recursive\":true";
     if (!mode.empty()) b += ",\"mode\":\"" + mode + "\"";
+    b += unsafe_field();
     b += "}";
     return post_check("/api/job/start", b, err);
 }
@@ -159,7 +167,7 @@ bool service_mkdir(const std::string& path, std::string& err) { return post_chec
 
 bool service_rename(const std::string& path, const std::string& to, std::string& err)
 {
-    return post_check("/api/rename", "{\"path\":\"" + json_esc_pub(path) + "\",\"to\":\"" + json_esc_pub(to) + "\"}", err);
+    return post_check("/api/rename", "{\"path\":\"" + json_esc_pub(path) + "\",\"to\":\"" + json_esc_pub(to) + "\"" + unsafe_field() + "}", err);
 }
 
 bool service_chmod(const std::string& path, const std::string& mode, bool recursive, std::string& err)
@@ -219,6 +227,12 @@ bool service_state_set_theme(const std::string& theme)
 {
     std::string e;
     return post_check("/api/state", "{\"theme\":\"" + theme + "\"}", e);
+}
+
+bool service_state_set_paths(const std::string& l, const std::string& r)
+{
+    std::string e;
+    return post_check("/api/state", "{\"l\":\"" + json_esc_pub(l) + "\",\"r\":\"" + json_esc_pub(r) + "\"}", e);
 }
 
 bool service_view(const std::string& path, int64_t maxLen, std::string& data, std::string& err)
@@ -322,4 +336,112 @@ bool service_quit()
     HttpResult r = http_post(SERVICE_HOST, SERVICE_PORT, "/quit", "{}", 2000);
     logf_("service: quit -> connected=%d status=%d", r.connected ? 1 : 0, r.status);
     return r.connected && r.status == 200;
+}
+
+bool service_find(const std::string& path, const std::string& q, FindResult& out, std::string& err)
+{
+    out = FindResult();
+    HttpResult r = http_get(SERVICE_HOST, SERVICE_PORT, "/api/find?path=" + urlenc(path) + "&q=" + urlenc(q), 60000);
+    if (!r.connected) { err = "noconn"; return false; }
+    JsonValue j;
+    if (!json_parse(r.body, j) || j.type != JsonValue::OBJ) { err = "bad_json"; return false; }
+    if (r.status != 200) { err = j["error"].asStr("http"); return false; }
+    out.scanned = j["scanned"].asInt();
+    out.trunc = j["trunc"].asBool();
+    const JsonValue& arr = j["results"];
+    for (size_t i = 0; i < arr.arr.size(); i++) {
+        FindHit h;
+        h.path = arr.arr[i]["p"].asStr();
+        std::string t = arr.arr[i]["t"].asStr("f");
+        h.type = t.empty() ? 'f' : t[0];
+        h.size = (int64_t)arr.arr[i]["s"].asNum();
+        out.hits.push_back(h);
+    }
+    return true;
+}
+
+bool service_log(int maxBytes, std::string& out)
+{
+    HttpResult r = http_get(SERVICE_HOST, SERVICE_PORT, "/api/log?n=" + std::to_string(maxBytes), 4000);
+    if (!r.connected || r.status != 200) return false;
+    out = r.body;
+    return true;
+}
+
+static std::string smb_body(const SmbConnView& c, const std::string& pass, bool withShare)
+{
+    std::string b = "{\"alias\":\"" + json_esc_pub(c.alias) + "\",\"host\":\"" + json_esc_pub(c.host) + "\",\"user\":\"" + json_esc_pub(c.user) +
+                    "\",\"pass\":\"" + json_esc_pub(pass) + "\",\"domain\":\"" + json_esc_pub(c.domain) + "\"";
+    if (withShare) b += ",\"share\":\"" + json_esc_pub(c.share) + "\"";
+    return b + "}";
+}
+
+bool service_smb_list(std::vector<SmbConnView>& out, std::string& err)
+{
+    out.clear();
+    HttpResult r = http_get(SERVICE_HOST, SERVICE_PORT, "/api/smb", 4000);
+    if (!r.connected) { err = "noconn"; return false; }
+    JsonValue j;
+    if (r.status != 200 || !json_parse(r.body, j) || j.type != JsonValue::OBJ) { err = "http"; return false; }
+    const JsonValue& arr = j["conns"];
+    for (size_t i = 0; i < arr.arr.size(); i++) {
+        const JsonValue& e = arr.arr[i];
+        SmbConnView c;
+        c.alias = e["alias"].asStr(); c.host = e["host"].asStr(); c.share = e["share"].asStr();
+        c.user = e["user"].asStr(); c.domain = e["domain"].asStr(); c.hasPass = e["has_pass"].asBool();
+        out.push_back(c);
+    }
+    return true;
+}
+
+bool service_smb_scan_start(std::string& err)
+{
+    HttpResult r = http_post(SERVICE_HOST, SERVICE_PORT, "/api/smb/scan", "{}", 5000);
+    if (!r.connected) { err = "noconn"; return false; }
+    if (r.status == 200) return true;
+    JsonValue j; json_parse(r.body, j);
+    err = j["error"].asStr("http");
+    return false;
+}
+
+bool service_smb_scan_state(SmbScanView& out)
+{
+    out = SmbScanView();
+    HttpResult r = http_get(SERVICE_HOST, SERVICE_PORT, "/api/smb/scan", 3000);
+    if (!r.connected || r.status != 200) return false;
+    JsonValue j;
+    if (!json_parse(r.body, j) || j.type != JsonValue::OBJ) return false;
+    out.running = j["running"].asBool();
+    out.done = j["done"].asInt();
+    out.total = j["total"].asInt();
+    const JsonValue& arr = j["found"];
+    for (size_t i = 0; i < arr.arr.size(); i++) out.found.push_back(arr.arr[i].asStr());
+    return true;
+}
+
+bool service_smb_shares(const SmbConnView& c, const std::string& pass, std::vector<std::string>& shares, std::string& err)
+{
+    shares.clear();
+    HttpResult r = http_post(SERVICE_HOST, SERVICE_PORT, "/api/smb/shares", smb_body(c, pass, false), 20000);
+    if (!r.connected) { err = "noconn"; return false; }
+    JsonValue j; json_parse(r.body, j);
+    if (r.status != 200) { err = j["error"].asStr("http"); return false; }
+    const JsonValue& arr = j["shares"];
+    for (size_t i = 0; i < arr.arr.size(); i++) shares.push_back(arr.arr[i].asStr());
+    return true;
+}
+
+bool service_smb_save(const SmbConnView& c, const std::string& pass, std::string& err)
+{
+    HttpResult r = http_post(SERVICE_HOST, SERVICE_PORT, "/api/smb/save", smb_body(c, pass, true), 20000);
+    if (!r.connected) { err = "noconn"; return false; }
+    if (r.status == 200) return true;
+    JsonValue j; json_parse(r.body, j);
+    err = j["error"].asStr("http");
+    return false;
+}
+
+bool service_smb_del(const std::string& alias, std::string& err)
+{
+    return post_check("/api/smb/del", "{\"alias\":\"" + json_esc_pub(alias) + "\"}", err);
 }

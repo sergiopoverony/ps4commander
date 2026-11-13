@@ -218,7 +218,7 @@
   "hint_enter": "open",
   "hint_up": "up",
   "hint_mark": "mark",
-  "hint_ctx": "menu",
+  "hint_ctx": "file menu",
   "hint_swap": "switch panel",
   "hint_bar": "bottom bar",
   "hint_pick": "choose",
@@ -226,12 +226,13 @@
   "hint_back": "back",
   "hint_retry": "try again",
   "hint_cancel": "cancel",
-  "hint_cmd": "{arrows} move    {cross} enter/select    {circle} up    {square} mark    {triangle} menu    {l1}/{r1} switch panel    {l2}/{r2} bottom bar",
   "svc_checking": "Looking for the ps4commander service...",
   "svc_starting": "Starting the service via BinLoader...",
   "svc_failed": "Service not responding. ",
   "svc_noloader": "BinLoader is off (GoldHEN - Servers - Enable Payloader Server).",
   "svc_timeout": "No answer from the service.",
   "noQr": "QR code not found in the app",
-  "appExit": "Exit"
+  "appExit": "Exit",
+  "helpPad": "D-pad Up/Down - move (hold to scroll fast)\nD-pad Left/Right - page up / down\nCross - open folder / confirm\nCircle - parent folder / back\nSquare - mark file (cursor moves down)\nTriangle - file menu (rename, select, properties, install .pkg)\nL1 / R1 - switch panel\nL2 / R2 - move along the bottom bar (1-10), Cross - run\nOptions - menu (theme, language, find, go to, network folders, log...)\n\nFull text editing, upload and download are in the web interface (port 8484).",
+  "e_noconn": "Service not responding"
 }

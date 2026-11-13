@@ -1,17 +1,22 @@
+// Интерфейс PKG-приложения: две панели, нижняя строка F1-F10, меню - всё как в веб-версии,
+// но под геймпад. Все обращения к службе (HTTP) идут в фоновых потоках (async.h): главный поток
+// только читает геймпад и рисует, поэтому интерфейс не "подвисает" на медленных папках/сети.
 #include "ui.h"
 #include "service.h"
-#include "scene.h"
+#include "gfx.h"
+#include "async.h"
 #include "image.h"
 #include "i18n.h"
 #include "log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <algorithm>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -28,367 +33,75 @@ extern "C" int sceSystemServiceHideSplashScreen(void);
 #define APP_VERSION "0.0.0.0"
 #endif
 
-#define FRAME_WIDTH   1920
-#define FRAME_HEIGHT  1080
-#define FRAME_DEPTH      4
+// ---------------------------------------------------------------- геометрия (экран 1920x1080)
 
-static const int FONT_PX  = 22;
-static const int ROW_H    = 30;
-static const int MARGIN_X = 36;
-static const int PANEL_TOP = 110;
-static const int PANEL_H   = 820;      // до строки нижнего меню
-static const int BAR_TOP   = PANEL_TOP + PANEL_H + 14;
-static const int BAR_H     = 44;
+static const int MARGIN_X  = 36;
+static const int TOP_BASE  = 38;          // базовая линия верхней строки
+static const int PANEL_TOP = 56;
+static const int PANEL_H   = 800;
+static const int HEAD_H    = 34;          // заголовок панели (путь)
+static const int COLH_H    = 28;          // шапка столбцов (Name/Size/Date/Attr)
+static const int FOOT_H    = 34;          // подвал панели (сведения/свободное место)
+static const int ROW_H     = 28;
+static const int BAR_TOP   = PANEL_TOP + PANEL_H + 10;
+static const int BAR_H     = 42;
+static const int HINT1_Y   = BAR_TOP + BAR_H + 38;
+static const int HINT2_Y   = HINT1_Y + 32;
+static const int CREDIT_Y  = HINT2_Y + 40;
 
-static const Color C_BG     = { 18,  20,  26 };
-static const Color C_PANEL  = { 26,  29,  37 };
-static const Color C_ROW2   = { 31,  34,  43 };
-static const Color C_EDGE   = { 70,  78, 100 };
-static const Color C_EDGE_A = { 120, 160, 235 };   // рамка активной панели
-static const Color C_TEXT   = { 230, 230, 230 };
-static const Color C_DIM    = { 150, 155, 165 };
-static const Color C_DIMMER = { 95,  99, 108 };
-static const Color C_DIR    = { 140, 190, 255 };
-static const Color C_SEL    = { 255, 210, 110 };
-static const Color C_ACCENT = { 110, 170, 255 };
-static const Color C_RED    = { 235, 100, 100 };
-static const Color C_CUR_BG = { 48,  58,  86 };
-static const Color C_BARBTN = { 36,  40,  52 };
-static const Color C_BARBTN_F = { 54,  70, 110 };
+static int g_redraw = 2;                  // сколько кадров ещё рисовать (2 - оба буфера экрана)
+static bool g_ready = false;
 
-static Scene2D* g_scene = NULL;
-static FT_Face  g_font;
-static int      g_cellW = 12;
-static bool     g_ready = false;
-static int      g_redraw = 2;
-static int      g_frameID = 0;
+static void redraw() { g_redraw = 2; }
 
-static Image g_qrSbp, g_qrPaypal;
-static bool  g_qrSbpOk = false, g_qrPaypalOk = false, g_qrTried = false;
+// ---------------------------------------------------------------- вспомогательное
 
-// ---------------------------------------------------------------- UTF-8 / UTF-16
-
-static int decode_utf8(const unsigned char*& p)
+static std::string tr_sub(const char* key, const char* def, std::initializer_list<std::pair<const char*, std::string>> subs)
 {
-    unsigned c = *p++;
-    if (c < 0x80) return (int)c;
-    int extra; unsigned cp;
-    if ((c & 0xE0) == 0xC0)      { cp = c & 0x1F; extra = 1; }
-    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; extra = 2; }
-    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; extra = 3; }
-    else return '?';
-    while (extra-- > 0) {
-        if ((*p & 0xC0) != 0x80) return '?';
-        cp = (cp << 6) | (*p & 0x3F);
-        p++;
+    std::string s = tr(key, def);
+    for (auto& kv : subs) {
+        std::string tok = std::string("{") + kv.first + "}";
+        size_t pos;
+        while ((pos = s.find(tok)) != std::string::npos) s.replace(pos, tok.size(), kv.second);
     }
-    return (int)cp;
+    return s;
 }
 
-static void encode_utf8(int cp, std::string& out)
+// Как errText() в веб-версии: e_<код> из переводов; коды вида EACCES - как есть; иначе "Error: код".
+static std::string tr_err(const std::string& code)
 {
-    if (cp < 0x80) { out += (char)cp; }
-    else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
-    else if (cp < 0x10000) {
-        out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
-    } else {
-        out += (char)(0xF0 | (cp >> 18)); out += (char)(0x80 | ((cp >> 12) & 0x3F));
-        out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
-    }
+    std::string k = "e_" + code;
+    std::string v = tr(k.c_str(), "\x01");
+    if (v != "\x01") return v;
+    bool errno_like = code.size() > 1 && code[0] == 'E';
+    for (char c : code) if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) errno_like = false;
+    if (errno_like) return code;
+    return tr("e_generic", "Error") + (code.empty() ? "" : ": " + code);
 }
 
-static int count_cp(const std::string& s)
+// Как fmtSize() в вебе.
+static std::string fmt_size(int64_t n)
 {
-    const unsigned char* p = (const unsigned char*)s.c_str();
-    int n = 0;
-    while (*p) { decode_utf8(p); n++; }
-    return n;
+    char b[48];
+    if (n < 1024) { snprintf(b, sizeof(b), "%lld B", (long long)n); return b; }
+    const char* u[] = { "KB", "MB", "GB", "TB" };
+    double v = (double)n; int i = -1;
+    do { v /= 1024.0; i++; } while (v >= 1024.0 && i < 3);
+    snprintf(b, sizeof(b), v >= 100 ? "%.0f %s" : v >= 10 ? "%.1f %s" : "%.2f %s", v, u[i]);
+    return b;
 }
 
-static std::string fit(const std::string& s, int maxChars)
+// Как fmtDate() в вебе: "YYYY-MM-DD HH:MM".
+static std::string fmt_date(int64_t sec)
 {
-    if (maxChars <= 0) return "";
-    if (count_cp(s) <= maxChars) return s;
-    const unsigned char* start = (const unsigned char*)s.c_str();
-    const unsigned char* p = start;
-    for (int i = 0; i < maxChars - 1 && *p; i++) decode_utf8(p);
-    return std::string((const char*)start, (size_t)(p - start)) + "\xE2\x80\xA6";
+    if (sec <= 0) return "";
+    time_t t = (time_t)sec;
+    struct tm tmv;
+    if (!gmtime_r(&t, &tmv)) return "";
+    char b[32];
+    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+    return b;
 }
-
-static size_t utf8_to_utf16(const std::string& s, uint16_t* out, size_t outCap)
-{
-    size_t n = 0;
-    const unsigned char* p = (const unsigned char*)s.data();
-    const unsigned char* end = p + s.size();
-    while (p < end && n + 1 < outCap) {
-        int cp = decode_utf8(p);
-        if (cp < 0) break;
-        if (cp <= 0xFFFF) out[n++] = (uint16_t)cp;
-        else if (n + 2 < outCap) { cp -= 0x10000; out[n++] = (uint16_t)(0xD800 + (cp >> 10)); out[n++] = (uint16_t)(0xDC00 + (cp & 0x3FF)); }
-        else break;
-    }
-    out[n] = 0;
-    return n;
-}
-
-static std::string utf16_to_utf8(const uint16_t* in, size_t cap)
-{
-    std::string out;
-    for (size_t i = 0; i < cap && in[i]; i++) {
-        unsigned c = in[i];
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < cap && in[i + 1] >= 0xDC00 && in[i + 1] <= 0xDFFF) {
-            int cp = 0x10000 + ((c - 0xD800) << 10) + (in[++i] - 0xDC00);
-            encode_utf8(cp, out);
-        } else {
-            encode_utf8((int)c, out);
-        }
-    }
-    return out;
-}
-
-// ---------------------------------------------------------------- текст
-
-static void draw_text(const std::string& s, int x, int baseline, Color fg, Color bg)
-{
-    FT_GlyphSlot slot = g_font->glyph;
-    const unsigned char* p = (const unsigned char*)s.c_str();
-    while (*p) {
-        int cp = decode_utf8(p);
-        FT_UInt gi = FT_Get_Char_Index(g_font, (FT_ULong)cp);
-        if (FT_Load_Glyph(g_font, gi, FT_LOAD_DEFAULT)) continue;
-        if (FT_Render_Glyph(slot, ft_render_mode_normal)) continue;
-        for (unsigned yy = 0; yy < slot->bitmap.rows; yy++) {
-            for (unsigned xx = 0; xx < slot->bitmap.width; xx++) {
-                unsigned a = slot->bitmap.buffer[yy * slot->bitmap.pitch + xx];
-                if (a == 0) continue;
-                int px = x + (int)xx + slot->bitmap_left;
-                int py = baseline + (int)yy - slot->bitmap_top;
-                if (px < 0 || py < 0 || px >= FRAME_WIDTH || py >= FRAME_HEIGHT) continue;
-                Color c;
-                c.r = (uint8_t)((bg.r * (255 - a) + fg.r * a) / 255);
-                c.g = (uint8_t)((bg.g * (255 - a) + fg.g * a) / 255);
-                c.b = (uint8_t)((bg.b * (255 - a) + fg.b * a) / 255);
-                g_scene->PutPixel(px, py, c);
-            }
-        }
-        x += (int)(slot->advance.x >> 6);
-    }
-}
-
-static void put_center(int cx, const std::string& s, int baseline, Color fg, Color bg)
-{
-    draw_text(s, cx - (count_cp(s) * g_cellW) / 2, baseline, fg, bg);
-}
-
-static void draw_wrapped(const std::string& s, int x, int yTop, int maxc, int maxLines, int lineH, Color fg, Color bg)
-{
-    const unsigned char* base = (const unsigned char*)s.c_str();
-    size_t total = s.size(), pos = 0;
-    int line = 0;
-    while (pos < total && line < maxLines) {
-        const unsigned char* p = base + pos;
-        int n = 0;
-        while (*p && n < maxc) { decode_utf8(p); n++; }
-        size_t byteEnd = (size_t)(p - base);
-        if (byteEnd < total) {
-            size_t sp = s.rfind(' ', byteEnd);
-            if (sp != std::string::npos && sp > pos) byteEnd = sp;
-        } else byteEnd = total;
-        draw_text(s.substr(pos, byteEnd - pos), x, yTop + line * lineH, fg, bg);
-        pos = byteEnd; while (pos < total && s[pos] == ' ') pos++;
-        line++;
-    }
-}
-
-// ---------------------------------------------------------------- иконки кнопок геймпада
-
-enum Icon { ICON_CROSS, ICON_CIRCLE, ICON_SQUARE, ICON_TRIANGLE, ICON_OPTIONS, ICON_ARROWS, ICON_UPDOWN };
-static const int ICON_S = 20;
-
-static bool in_tri(float px, float py, float ax, float ay, float bx, float by, float cx, float cy)
-{
-    float d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
-    float d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
-    float d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
-    bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-    bool pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-    return !(neg && pos);
-}
-
-static bool icon_hit(Icon k, float u, float v)
-{
-    switch (k) {
-    case ICON_CIRCLE: { float r = sqrtf(u * u + v * v); return r < 0.88f && r > 0.60f; }
-    case ICON_CROSS: {
-        float a = fabsf(u - v) * 0.7071f, b = fabsf(u + v) * 0.7071f;
-        return fabsf(u) < 0.82f && fabsf(v) < 0.82f && (a < 0.17f || b < 0.17f);
-    }
-    case ICON_SQUARE: { float m = fmaxf(fabsf(u), fabsf(v)); return m < 0.80f && m > 0.56f; }
-    case ICON_TRIANGLE:
-        return in_tri(u, v, 0.0f, -0.90f, -0.90f, 0.70f, 0.90f, 0.70f)
-            && !in_tri(u, v, 0.0f, -0.42f, -0.495f, 0.46f, 0.495f, 0.46f);
-    case ICON_OPTIONS:
-        return fabsf(u) < 0.80f && (fabsf(v + 0.55f) < 0.11f || fabsf(v) < 0.11f || fabsf(v - 0.55f) < 0.11f);
-    case ICON_UPDOWN:
-        return in_tri(u, v, 0.0f, -0.95f, -0.60f, -0.15f, 0.60f, -0.15f)
-            || in_tri(u, v, -0.60f, 0.15f, 0.60f, 0.15f, 0.0f, 0.95f);
-    case ICON_ARROWS:
-        return in_tri(u, v, 0.0f, -0.95f, -0.32f, -0.30f, 0.32f, -0.30f)
-            || in_tri(u, v, 0.0f, 0.95f, -0.32f, 0.30f, 0.32f, 0.30f)
-            || in_tri(u, v, -0.95f, 0.0f, -0.30f, -0.32f, -0.30f, 0.32f)
-            || in_tri(u, v, 0.95f, 0.0f, 0.30f, -0.32f, 0.30f, 0.32f);
-    }
-    return false;
-}
-
-static Color icon_color(Icon k)
-{
-    switch (k) {
-    case ICON_CROSS:    { Color c = { 120, 170, 255 }; return c; }
-    case ICON_CIRCLE:   { Color c = { 255, 100, 100 }; return c; }
-    case ICON_SQUARE:   { Color c = { 240, 130, 200 }; return c; }
-    case ICON_TRIANGLE: { Color c = {  90, 210, 170 }; return c; }
-    default:            { Color c = { 200, 204, 212 }; return c; }
-    }
-}
-
-static void draw_icon(Icon k, int x, int top, Color bg)
-{
-    Color fg = icon_color(k);
-    for (int py = 0; py < ICON_S; py++) {
-        for (int px = 0; px < ICON_S; px++) {
-            int hit = 0;
-            for (int sy = 0; sy < 4; sy++)
-                for (int sx = 0; sx < 4; sx++) {
-                    float u = ((px + (sx + 0.5f) / 4.0f) / ICON_S) * 2.0f - 1.0f;
-                    float v = ((py + (sy + 0.5f) / 4.0f) / ICON_S) * 2.0f - 1.0f;
-                    if (icon_hit(k, u, v)) hit++;
-                }
-            if (hit == 0) continue;
-            int xx = x + px, yy = top + py;
-            if (xx < 0 || yy < 0 || xx >= FRAME_WIDTH || yy >= FRAME_HEIGHT) continue;
-            Color c;
-            c.r = (uint8_t)((bg.r * (16 - hit) + fg.r * hit) / 16);
-            c.g = (uint8_t)((bg.g * (16 - hit) + fg.g * hit) / 16);
-            c.b = (uint8_t)((bg.b * (16 - hit) + fg.b * hit) / 16);
-            g_scene->PutPixel(xx, yy, c);
-        }
-    }
-}
-
-// Бейдж-иконка "L1"/"R1"/"L2"/"R2" - скруглённый прямоугольник с подписью (своих треугольников
-// под эти кнопки не делаем, буквы понятнее).
-static void fill_rounded(int x, int y, int w, int h, int r, Color c);
-static void draw_badge(const char* label, int x, int top, Color bg)
-{
-    Color c = { 200, 204, 212 };
-    fill_rounded(x, top, ICON_S + 6, ICON_S, 6, c);
-    draw_text(label, x + 3, top + ICON_S - 5, bg, c);
-}
-
-struct RichTok { bool isIcon; bool isBadge; Icon icon; std::string text; };
-
-static bool icon_by_name(const std::string& n, Icon& out)
-{
-    if (n == "cross") { out = ICON_CROSS; return true; }
-    if (n == "circle") { out = ICON_CIRCLE; return true; }
-    if (n == "square") { out = ICON_SQUARE; return true; }
-    if (n == "triangle") { out = ICON_TRIANGLE; return true; }
-    if (n == "options") { out = ICON_OPTIONS; return true; }
-    if (n == "updown") { out = ICON_UPDOWN; return true; }
-    if (n == "arrows") { out = ICON_ARROWS; return true; }
-    return false;
-}
-
-static std::vector<RichTok> rich_parse(const std::string& s)
-{
-    std::vector<RichTok> out;
-    std::string cur;
-    size_t i = 0;
-    while (i < s.size()) {
-        if (s[i] == '{') {
-            size_t e = s.find('}', i);
-            if (e != std::string::npos) {
-                std::string name = s.substr(i + 1, e - i - 1);
-                Icon k;
-                bool isBadge = (name == "l1" || name == "r1" || name == "l2" || name == "r2");
-                if (isBadge || icon_by_name(name, k)) {
-                    if (!cur.empty()) { RichTok t; t.isIcon = false; t.isBadge = false; t.icon = ICON_CROSS; t.text = cur; out.push_back(t); cur.clear(); }
-                    RichTok t; t.isIcon = !isBadge; t.isBadge = isBadge; t.icon = isBadge ? ICON_CROSS : k; t.text = isBadge ? name : ""; out.push_back(t);
-                    i = e + 1;
-                    continue;
-                }
-            }
-        }
-        cur += s[i++];
-    }
-    if (!cur.empty()) { RichTok t; t.isIcon = false; t.isBadge = false; t.icon = ICON_CROSS; t.text = cur; out.push_back(t); }
-    return out;
-}
-
-static int rich_width(const std::vector<RichTok>& toks)
-{
-    int w = 0;
-    for (auto& t : toks) w += (t.isIcon || t.isBadge) ? (ICON_S + 6) : count_cp(t.text) * g_cellW;
-    return w;
-}
-
-static void draw_rich(const std::vector<RichTok>& toks, int x, int baseline, Color fg, Color bg)
-{
-    for (auto& t : toks) {
-        if (t.isBadge) { draw_badge(t.text == "l1" ? "L1" : t.text == "r1" ? "R1" : t.text == "l2" ? "L2" : "R2", x, baseline - ICON_S + 3, bg); x += ICON_S + 6; }
-        else if (t.isIcon) { draw_icon(t.icon, x, baseline - ICON_S + 3, bg); x += ICON_S + 6; }
-        else { draw_text(t.text, x, baseline, fg, bg); x += count_cp(t.text) * g_cellW; }
-    }
-}
-
-static void put_center_rich(int cx, const std::string& s, int baseline, Color fg, Color bg)
-{
-    std::vector<RichTok> toks = rich_parse(s);
-    draw_rich(toks, cx - rich_width(toks) / 2, baseline, fg, bg);
-}
-
-// ---------------------------------------------------------------- примитивы
-
-static void fill(int x, int y, int w, int h, Color c) { g_scene->FillRect(x, y, w, h, c); }
-
-static void fill_rounded(int x, int y, int w, int h, int r, Color c)
-{
-    if (r <= 0) { fill(x, y, w, h, c); return; }
-    fill(x + r, y, w - 2 * r, h, c);
-    fill(x, y + r, w, h - 2 * r, c);
-    for (int yy = 0; yy < r; yy++) {
-        double dx2 = (double)r * r - (double)(r - yy) * (r - yy);
-        int dx = (int)sqrt(dx2 < 0 ? 0 : dx2);
-        int rowW = r + dx;
-        fill(x + r - dx, y + yy, rowW - (r - dx), 1, c);
-        fill(x + w - r - dx, y + yy, rowW - (r - dx), 1, c);
-        fill(x + r - dx, y + h - 1 - yy, rowW - (r - dx), 1, c);
-        fill(x + w - r - dx, y + h - 1 - yy, rowW - (r - dx), 1, c);
-    }
-}
-
-static void draw_frame(int x, int y, int w, int h, int r, Color border, Color fillc)
-{
-    fill_rounded(x - 2, y - 2, w + 4, h + 4, r + 2, border);
-    fill_rounded(x, y, w, h, r, fillc);
-}
-
-// ---------------------------------------------------------------- модель панели
-
-struct Entry2 { std::string name, perm, link; char type = 'f'; int64_t size = 0, mtime = 0; };
-
-struct Panel {
-    std::string path;
-    std::vector<Entry2> items;    // первый элемент - ".." (если путь не корень), затем сами записи
-    int cur = 0, scroll = 0;
-    std::vector<std::string> sel;    // отмеченные (Square) имена
-    bool hasUp = false;
-    std::string err;
-};
-
-static Panel g_panels[2];
-static int g_active = 0;
 
 static std::string parent_of(const std::string& p)
 {
@@ -406,200 +119,254 @@ static std::string join_path(const std::string& dir, const std::string& name)
     return dir + "/" + name;
 }
 
-static void panel_load(Panel& p, const std::string& path, const std::string& keepName)
-{
-    LsView v;
-    bool ok = service_ls(path, v);
-    p.sel.clear();
-    if (!ok) { p.err = v.err.empty() ? "error" : v.err; return; }
-    p.err.clear();
-    p.path = v.path;
-    p.items.clear();
-    p.hasUp = p.path != "/";
-    if (p.hasUp) { Entry2 up; up.name = ".."; up.type = 'd'; p.items.push_back(up); }
-    for (auto& e : v.entries) {
-        Entry2 x;
-        x.name = e.name; x.type = e.type; x.size = e.size; x.mtime = e.mtime; x.perm = e.perm; x.link = e.link;
-        p.items.push_back(x);
-    }
-    std::sort(p.items.begin() + (p.hasUp ? 1 : 0), p.items.end(), [](const Entry2& a, const Entry2& b) {
-        if ((a.type == 'd') != (b.type == 'd')) return a.type == 'd';
-        return a.name < b.name;
-    });
-    p.cur = 0;
-    if (!keepName.empty()) for (size_t i = 0; i < p.items.size(); i++) if (p.items[i].name == keepName) { p.cur = (int)i; break; }
-    p.scroll = 0;
-}
+static std::string lower(std::string s) { for (auto& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32); return s; }
+
+// ---------------------------------------------------------------- модель панели
+
+struct Entry2 {
+    std::string name, perm, link, user, group;
+    char type = 'f';
+    bool td = false;                 // ссылка на папку
+    int64_t size = 0, mtime = 0;
+    bool isDir() const { return type == 'd' || td; }
+};
+
+struct Panel {
+    std::string path;
+    std::vector<Entry2> items;       // первый элемент - ".." (если путь не корень)
+    int cur = 0, scroll = 0;
+    std::vector<std::string> sel;    // отмеченные имена
+    bool hasUp = false;
+    bool danger = false;
+    std::string err;
+    int64_t freeB = -1, totalB = -1;
+    volatile int reqId = 0;          // номер последнего запроса: устаревшие ответы отбрасываются
+    bool loading = false;
+};
+
+static Panel g_panels[2];
+static int g_active = 0;
+static bool g_unsafe = false;        // "разрешить изменения в системных областях"
+static int  g_busy = 0;              // сколько фоновых действий выполняется (для индикатора)
+static bool g_stateReady = false;
+static uint64_t g_stateAt = 0;       // когда сохранить пути панелей в службе (0 - не надо)
 
 static Entry2* panel_cur(Panel& p) { return (p.cur >= 0 && p.cur < (int)p.items.size()) ? &p.items[p.cur] : NULL; }
+static bool is_marked(const Panel& p, const std::string& n) { return std::find(p.sel.begin(), p.sel.end(), n) != p.sel.end(); }
+static bool is_pkg(const Entry2& e) { std::string n = lower(e.name); return e.type == 'f' && n.size() > 4 && n.compare(n.size() - 4, 4, ".pkg") == 0; }
 
-static void panel_refresh(Panel& p) { std::string keep = panel_cur(p) ? panel_cur(p)->name : ""; panel_load(p, p.path, keep); }
+static uint64_t now_us() { return sceKernelGetProcessTime(); }
 
-static void panel_up(Panel& p) { if (p.hasUp) { std::string from = base_of(p.path); panel_load(p, parent_of(p.path), from); } }
-
-static void panel_enter(Panel& p)
+static void panel_load(int pi, const std::string& path, const std::string& keepName)
 {
-    Entry2* e = panel_cur(p);
-    if (!e) return;
-    if (e->name == "..") { panel_up(p); return; }
-    if (e->type == 'd' || (e->type == 'l')) panel_load(p, join_path(p.path, e->name), "");
+    Panel& p0 = g_panels[pi];
+    int id = ++p0.reqId;
+    p0.loading = true;
+    redraw();
+    auto v = std::make_shared<LsView>();
+    auto ok = std::make_shared<bool>(false);
+    async_run(pi == 0 ? ASYNC_LS0 : ASYNC_LS1,
+        [pi, id, path, v, ok]() { if (g_panels[pi].reqId != id) return; *ok = service_ls(path, *v); },
+        [pi, id, keepName, v, ok]() {
+            Panel& p = g_panels[pi];
+            if (p.reqId != id) return;
+            p.loading = false;
+            redraw();
+            if (!*ok) { p.err = v->err.empty() ? "error" : v->err; return; }
+            p.err.clear();
+            p.sel.clear();
+            p.path = v->path;
+            p.danger = v->danger;
+            p.freeB = v->freeB; p.totalB = v->totalB;
+            p.items.clear();
+            p.hasUp = p.path != "/";
+            if (p.hasUp) { Entry2 up; up.name = ".."; up.type = 'd'; p.items.push_back(up); }
+            std::vector<Entry2> list;
+            for (auto& e : v->entries) {
+                Entry2 x;
+                x.name = e.name; x.type = e.type; x.size = e.size; x.mtime = e.mtime; x.perm = e.perm;
+                x.link = e.link; x.td = e.td; x.user = e.user; x.group = e.group;
+                list.push_back(x);
+            }
+            std::sort(list.begin(), list.end(), [](const Entry2& a, const Entry2& b) {
+                if (a.isDir() != b.isDir()) return a.isDir();
+                return lower(a.name) < lower(b.name);
+            });
+            for (auto& x : list) p.items.push_back(x);
+            p.cur = 0;
+            if (!keepName.empty()) for (size_t i = 0; i < p.items.size(); i++) if (p.items[i].name == keepName) { p.cur = (int)i; break; }
+            p.scroll = 0;
+            if (g_stateReady) g_stateAt = now_us() + 800000ULL;
+        });
 }
 
-// ---------------------------------------------------------------- состояние приложения
+static void panel_refresh(int pi)
+{
+    Panel& p = g_panels[pi];
+    std::string keep = panel_cur(p) ? panel_cur(p)->name : "";
+    if (keep == "..") keep.clear();
+    panel_load(pi, p.path, keep);
+}
+static void refresh_all() { panel_refresh(0); panel_refresh(1); }
+
+static void panel_up(int pi)
+{
+    Panel& p = g_panels[pi];
+    if (p.hasUp) panel_load(pi, parent_of(p.path), base_of(p.path));
+}
+
+static void panel_enter(int pi)
+{
+    Panel& p = g_panels[pi];
+    Entry2* e = panel_cur(p);
+    if (!e) return;
+    if (e->name == "..") { panel_up(pi); return; }
+    if (e->isDir()) panel_load(pi, join_path(p.path, e->name), "");
+}
+
+// ---------------------------------------------------------------- состояние интерфейса
 
 enum Svc { S_CHECK, S_STARTING, S_READY, S_FAILED };
 static Svc g_svc = S_CHECK;
-static uint64_t g_nextCheck = 0;
-static int g_startTries = 0;
 static std::string g_svcErr;
+static volatile int g_svcStage = 0;       // 0 - ищем службу, 1 - запускаем через BinLoader
 
-enum Focus { FOCUS_PANEL, FOCUS_BAR, FOCUS_APPMENU, FOCUS_CTX, FOCUS_CONFIRM, FOCUS_MSG, FOCUS_PROGRESS, FOCUS_DONATE };
-static Focus g_focus = FOCUS_PANEL;
+enum Focus { F_PANEL, F_BAR, F_MENU, F_CTX, F_CONFIRM, F_TEXT, F_PROGRESS, F_PKGQ, F_DONATE, F_PICK, F_SMBLIST, F_SMBEDIT };
+static Focus g_focus = F_PANEL;
+static std::vector<Focus> g_fstack;
+static void focus_push(Focus f) { g_fstack.push_back(g_focus); g_focus = f; redraw(); }
+static void focus_pop() { if (g_fstack.empty()) g_focus = F_PANEL; else { g_focus = g_fstack.back(); g_fstack.pop_back(); } redraw(); }
+static void focus_reset() { g_fstack.clear(); g_focus = F_PANEL; redraw(); }
+
 static int g_barCursor = 0;
-static int g_appMenuCursor = 0;
-static int g_ctxCursor = 0;
-static std::string g_msg;
-static bool g_msgIsError = false;
+static int g_menuCursor = 0, g_ctxCursor = 0;
 
-enum ConfirmKind { CONF_NONE, CONF_DELETE, CONF_OVERWRITE, CONF_PKG_INSTALL, CONF_QUIT_SVC };
-static ConfirmKind g_confirm = CONF_NONE;
-static std::string g_confirmOp;              // "copy"/"move" при CONF_OVERWRITE
-static std::vector<std::string> g_confirmPaths;
-static std::string g_confirmDest;
-
-enum ProgKind { PROG_NONE, PROG_JOB, PROG_PKG };
-static ProgKind g_prog = PROG_NONE;
-
-static const char* KEY_NAMES[10] = {
-    "help", "refresh", "view", "edit", "copy", "move", "mkdir", "del", "chmod", "menu"
-};
-static const char* KEY_DEFAULT[10] = {
-    "Help", "Refresh", "View", "Edit", "Copy", "Move", "MkDir", "Delete", "Chmod", "Menu"
-};
-
-static std::string tr_err(const std::string& code) { return tr(("err_" + code).c_str(), code.c_str()); }
-
-// Подстановка "{n}" в переведённую строку - тот же простой шаблонный формат,
-// что использует веб-интерфейс (t('key', {n}) в web/index.html).
-static std::string tr_fmt(const char* key, const char* def, const std::string& n) {
-    std::string s = tr(key, def);
-    size_t pos = s.find("{n}");
-    if (pos != std::string::npos) s.replace(pos, 3, n);
-    return s;
-}
-
-// Тот же формат, что fmtDate() в web/index.html: "YYYY-MM-DD HH:MM".
-static std::string fmt_date(int64_t sec)
+// --- подтверждение
+struct Confirm { std::string title, body, yes; std::function<void()> onYes; };
+static Confirm g_cf;
+static void confirm_open(const std::string& title, const std::string& body, const std::string& yes, std::function<void()> fn)
 {
-    if (sec <= 0) return "";
-    time_t t = (time_t)sec;
-    struct tm tmv;
-    if (!gmtime_r(&t, &tmv)) return "";
-    char b[32];
-    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
-    return b;
+    g_cf.title = title; g_cf.body = body; g_cf.yes = yes; g_cf.onYes = fn;
+    focus_push(F_CONFIRM);
 }
 
-static std::string fmt_size(int64_t s)
+// --- окно с текстом (сообщения, свойства, помощь, журнал, просмотр файла)
+struct TextView { std::string title; std::vector<std::string> lines; int scroll = 0; bool error = false; };
+static TextView g_tv;
+static void text_open(const std::string& title, const std::string& body, bool error = false)
 {
-    char b[32];
-    if (s < 0) return "";
-    const char* u[] = { "B", "KB", "MB", "GB", "TB" };
-    double v = (double)s; int ui = 0;
-    while (v >= 1024.0 && ui < 4) { v /= 1024.0; ui++; }
-    snprintf(b, sizeof(b), ui == 0 ? "%.0f %s" : "%.1f %s", v, u[ui]);
-    return b;
+    g_tv.title = title; g_tv.error = error; g_tv.scroll = 0;
+    g_tv.lines = wrap_lines(body, 110);
+    focus_push(F_TEXT);
+}
+static void error_open(const std::string& code) { text_open(tr("e_generic", "Error"), tr_err(code), true); }
+
+// --- выбор из списка (корни, результаты поиска, серверы и общие папки SMB)
+struct Pick { std::string title, note; std::vector<std::string> items; int cur = 0, scroll = 0; std::function<void(int)> onPick; };
+static Pick g_pick;
+static void pick_open(const std::string& title, const std::string& note, const std::vector<std::string>& items, std::function<void(int)> fn, int cur = 0)
+{
+    g_pick.title = title; g_pick.note = note; g_pick.items = items; g_pick.onPick = fn; g_pick.cur = cur; g_pick.scroll = 0;
+    focus_push(F_PICK);
 }
 
-static bool is_pkg(const Entry2& e) { std::string n = e.name; size_t d = n.rfind('.'); return d != std::string::npos && n.substr(d) == ".pkg"; }
+// --- прогресс заданий копирования/удаления и очередь установки PKG (опрашиваются в фоне)
+static JobView g_job;
+static PkgQueueView g_pkgq;
+static bool g_pollBusy = false;
+static uint64_t g_pollAt = 0, g_progStart = 0;
 
-static bool g_imeReady = false;
-static int g_userId = 0;
+static Image g_qrSbp, g_qrPaypal;
+static bool g_qrSbpOk = false, g_qrPaypalOk = false, g_qrTried = false;
+
+// --- SMB
+struct SmbForm {
+    SmbConnView c;
+    std::string pass;
+    bool editing = false;            // правка сохранённого подключения (имя менять нельзя)
+    bool hasPass = false;
+    std::vector<std::string> shares;
+    std::string status;
+    bool statusErr = false;
+    int cur = 0;
+    bool scanning = false;
+};
+static SmbForm g_sf;
+static std::vector<SmbConnView> g_smbList;
+static int g_smbCur = 0, g_smbScroll = 0;
+static bool g_smbPollBusy = false;
+static uint64_t g_smbNextPoll = 0;
+
+// ---------------------------------------------------------------- действия (всё через фон)
+
+// Выполняет fn в фоне; по успеху вызывает onOk в главном потоке, иначе показывает ошибку.
+static void act_async(std::function<bool(std::string&)> fn, std::function<void()> onOk)
+{
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++;
+    redraw();
+    async_run(ASYNC_ACT, [fn, err, ok]() { *ok = fn(*err); },
+        [err, ok, onOk]() { g_busy--; redraw(); if (*ok) { if (onOk) onOk(); } else error_open(*err); });
+}
 
 static bool ime_text(const std::string& title, const std::string& initial, std::string& out);
 
-// ---------------------------------------------------------------- действия нижней панели (F1..F10)
-
-static void act_view();
-static void act_edit();
-static void act_copy_move(bool move);
-static void act_mkdir();
-static void act_delete();
-static void act_chmod();
-
-static void run_bar_action(int idx)
+static std::vector<std::string> targets(Panel& p, bool needFiles = false)
 {
-    switch (idx) {
-    case 0: g_msg = tr("hint_cmd", "{arrows} move    {cross} enter/select    {circle} up    {square} mark    {triangle} menu    {l1}/{r1} switch panel    {l2}/{r2} bottom bar"); g_focus = FOCUS_MSG; g_msgIsError = false; break;
-    case 1: panel_refresh(g_panels[0]); panel_refresh(g_panels[1]); break;
-    case 2: act_view(); break;
-    case 3: act_edit(); break;
-    case 4: act_copy_move(false); break;
-    case 5: act_copy_move(true); break;
-    case 6: act_mkdir(); break;
-    case 7: act_delete(); break;
-    case 8: act_chmod(); break;
-    case 9: g_focus = FOCUS_APPMENU; g_appMenuCursor = 0; break;
-    }
+    std::vector<std::string> v;
+    if (!p.sel.empty()) { for (auto& n : p.sel) v.push_back(n); }
+    else { Entry2* e = panel_cur(p); if (e && e->name != "..") v.push_back(e->name); }
+    (void)needFiles;
+    return v;
 }
 
-static void act_view()
+static void job_progress_open()
 {
-    Panel& p = g_panels[g_active];
-    Entry2* e = panel_cur(p);
-    if (!e || e->name == ".." || e->type != 'f') return;
-    std::string data, err;
-    if (!service_view(join_path(p.path, e->name), 60000, data, err)) { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; return; }
-    // Полноценный просмотрщик с прокруткой не делаем на этом этапе - показываем начало файла
-    // в окне сообщения (достаточно, чтобы опознать текстовый файл; полный просмотр - в веб-интерфейсе).
-    g_msg = data.substr(0, 2000);
-    g_msgIsError = false;
-    g_focus = FOCUS_MSG;
+    g_job = JobView();
+    g_progStart = now_us();
+    g_pollAt = 0;
+    focus_push(F_PROGRESS);
 }
 
-static void act_edit()
+static void start_job(const std::string& op, std::vector<std::string> paths, const std::string& dest, bool overwrite, const std::string& mode)
 {
-    // Редактирование текста с клавиатуры PS4 попросит слишком длинный ввод для системного IME -
-    // в этой версии не делаем (полноценный редактор остаётся в веб-интерфейсе).
-    g_msg = tr("editWeb", "Full editing is available on the web interface (port 8484).");
-    g_msgIsError = false;
-    g_focus = FOCUS_MSG;
+    act_async([=](std::string& err) { return service_job_start(op, paths, dest, overwrite, op != "chmod", mode, err); },
+              [=]() { job_progress_open(); });
 }
 
 static void act_copy_move(bool move)
 {
     Panel& src = g_panels[g_active];
     Panel& dst = g_panels[1 - g_active];
-    std::vector<std::string> paths = src.sel;
-    if (paths.empty()) { Entry2* e = panel_cur(src); if (e && e->name != "..") paths.push_back(join_path(src.path, e->name)); }
-    if (paths.empty()) return;
-    g_confirmOp = move ? "move" : "copy";
-    g_confirmPaths = paths;
-    g_confirmDest = dst.path;
-    g_confirm = CONF_OVERWRITE;
-    g_focus = FOCUS_CONFIRM;
+    std::vector<std::string> names = targets(src), paths;
+    if (names.empty()) return;
+    for (auto& n : names) paths.push_back(join_path(src.path, n));
+    std::string dest = dst.path;
+    std::string verb = move ? tr("move", "Move") : tr("copy", "Copy");
+    std::string title = verb + " " + std::to_string(paths.size()) + " " + tr("items", "items") + " -> " + dest + "?";
+    std::string op = move ? "move" : "copy";
+    confirm_open(title, tr("overwrite", "Overwrite existing files"), verb, [=]() { start_job(op, paths, dest, true, ""); });
+}
+
+static void act_delete()
+{
+    Panel& p = g_panels[g_active];
+    std::vector<std::string> names = targets(p), paths;
+    if (names.empty()) return;
+    for (auto& n : names) paths.push_back(join_path(p.path, n));
+    std::string yes = tr("del", "Delete");
+    confirm_open(yes + " " + std::to_string(paths.size()) + " " + tr("items", "items") + "?", tr("delWarn", "This cannot be undone."), yes,
+                 [=]() { start_job("delete", paths, "", false, ""); });
 }
 
 static void act_mkdir()
 {
     std::string name;
     if (!ime_text(tr("newFolder", "New folder name:"), "", name) || name.empty()) return;
-    std::string err;
-    if (service_mkdir(join_path(g_panels[g_active].path, name), err)) panel_refresh(g_panels[g_active]);
-    else { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; }
-}
-
-static void act_delete()
-{
-    Panel& p = g_panels[g_active];
-    std::vector<std::string> names = p.sel;
-    if (names.empty()) { Entry2* e = panel_cur(p); if (e && e->name != "..") names.push_back(e->name); }
-    if (names.empty()) return;
-    std::vector<std::string> paths;
-    for (auto& n : names) paths.push_back(join_path(p.path, n));
-    g_confirmPaths = paths;
-    g_confirm = CONF_DELETE;
-    g_focus = FOCUS_CONFIRM;
+    int pi = g_active;
+    std::string full = join_path(g_panels[pi].path, name);
+    act_async([=](std::string& err) { return service_mkdir(full, err); }, [=]() { panel_refresh(pi); });
 }
 
 static void act_chmod()
@@ -608,58 +375,314 @@ static void act_chmod()
     if (!e || e->name == "..") return;
     std::string mode;
     if (!ime_text(tr("modeOct", "Permissions (octal, e.g. 755):"), e->perm, mode) || mode.empty()) return;
-    std::string err;
-    if (service_chmod(join_path(g_panels[g_active].path, e->name), mode, false, err)) panel_refresh(g_panels[g_active]);
-    else { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; }
+    std::vector<std::string> paths; paths.push_back(join_path(g_panels[g_active].path, e->name));
+    start_job("chmod", paths, "", false, mode);
 }
 
-// ---------------------------------------------------------------- контекстное меню (Треугольник)
+static void act_rename()
+{
+    int pi = g_active;
+    Panel& p = g_panels[pi];
+    Entry2* e = panel_cur(p);
+    if (!e || e->name == "..") return;
+    std::string name;
+    if (!ime_text(tr("rename", "Rename"), e->name, name) || name.empty() || name == e->name) return;
+    std::string from = join_path(p.path, e->name), to = join_path(p.path, name);
+    act_async([=](std::string& err) { return service_rename(from, to, err); }, [=]() { panel_refresh(pi); });
+}
 
-// Порядок фиксирован: Rename/Mark/Properties/Cancel всегда на местах 0..3,
-// "Install .pkg" добавляется пятым пунктом (индекс 4) только для .pkg-файлов
-// (см. ctx_count) - чтобы индексы не менялись местами в зависимости от pkg.
-// Ключи те же, что у веб-версии: rename/select/infoTitle/cancel/install.
-static const char* CTX_ITEMS[5] = { "rename", "select", "infoTitle", "cancel", "install" };
+static void act_view()
+{
+    Panel& p = g_panels[g_active];
+    Entry2* e = panel_cur(p);
+    if (!e || e->name == ".." || e->type != 'f') return;
+    std::string path = join_path(p.path, e->name), name = e->name;
+    auto data = std::make_shared<std::string>();
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++; redraw();
+    async_run(ASYNC_ACT, [path, data, err, ok]() { *ok = service_view(path, 60000, *data, *err); },
+        [name, data, err, ok]() {
+            g_busy--; redraw();
+            if (!*ok) { error_open(*err); return; }
+            // двоичный файл (есть нулевые байты в начале) - показываем как hex
+            bool bin = false;
+            for (size_t i = 0; i < data->size() && i < 512; i++) if ((*data)[i] == 0) { bin = true; break; }
+            std::string txt;
+            if (bin) {
+                char b[16];
+                for (size_t off = 0; off < data->size() && off < 4096; off += 16) {
+                    snprintf(b, sizeof(b), "%06zx  ", off); txt += b;
+                    std::string asc;
+                    for (size_t i = 0; i < 16; i++) {
+                        if (off + i < data->size()) { unsigned char c = (unsigned char)(*data)[off + i]; snprintf(b, sizeof(b), "%02x ", c); txt += b; asc += (c >= 32 && c < 127) ? (char)c : '.'; }
+                        else txt += "   ";
+                    }
+                    txt += " " + asc + "\n";
+                }
+            } else {
+                for (char c : *data) if (c != '\r' && c != '\t') txt += (c < 32 && c != '\n') ? '.' : c; else if (c == '\t') txt += "    ";
+            }
+            text_open(name, txt);
+        });
+}
 
-static int ctx_count(bool pkg) { return pkg ? 5 : 4; }
+static void act_edit() { text_open(tr("edit", "Edit"), tr("editWeb", "Full editing is available on the web interface (port 8484)."), false); }
 
-static void ctx_run(int idx, bool pkg)
+static void act_props()
 {
     Panel& p = g_panels[g_active];
     Entry2* e = panel_cur(p);
     if (!e || e->name == "..") return;
-    if (idx == 0) {
-        std::string name;
-        if (ime_text(tr("rename", "Rename"), e->name, name) && !name.empty() && name != e->name) {
-            std::string err;
-            if (service_rename(join_path(p.path, e->name), join_path(p.path, name), err)) panel_refresh(p);
-            else { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; return; }
-        }
-    } else if (idx == 1) {
-        auto it = std::find(p.sel.begin(), p.sel.end(), e->name);
-        if (it == p.sel.end()) p.sel.push_back(e->name); else p.sel.erase(it);
-    } else if (idx == 2) {
-        // Те же поля и ключи, что в диалоге "Properties" веб-версии (showInfo в web/index.html).
-        const char* typeKey = e->type == 'd' ? "typeDir" : e->type == 'l' ? "typeLink" : e->type == 'f' ? "typeFile" : "typeOther";
-        std::string msg = tr("fPath", "Path") + ": " + join_path(p.path, e->name) +
-                           "\n" + tr("fType", "Type") + ": " + tr(typeKey, "File") +
-                           "\n" + tr("fMode", "Permissions") + ": " + e->perm;
-        if (e->type == 'f') msg += "\n" + tr("fSize", "Size") + ": " + fmt_size(e->size) + " (" + std::to_string((long long)e->size) + " B)";
-        std::string dt = fmt_date(e->mtime);
-        if (!dt.empty()) msg += "\n" + tr("fTime", "Modified") + ": " + dt;
-        if (!e->link.empty()) msg += "\n" + tr("fTarget", "Link target") + ": " + e->link;
-        g_msg = msg; g_msgIsError = false;
-    } else if (idx == 4 && pkg) {
-        g_confirmPaths.clear(); g_confirmPaths.push_back(join_path(p.path, e->name));
-        g_confirm = CONF_PKG_INSTALL;
-        g_focus = FOCUS_CONFIRM;
-        return;
-    }
-    g_focus = (g_focus == FOCUS_CONFIRM) ? g_focus : FOCUS_PANEL;
-    if (idx == 2) g_focus = FOCUS_MSG;
+    const char* typeKey = e->type == 'd' ? "typeDir" : e->type == 'l' ? "typeLink" : e->type == 'f' ? "typeFile" : "typeOther";
+    std::string msg = tr("fPath", "Path") + ": " + join_path(p.path, e->name) +
+                      "\n" + tr("fType", "Type") + ": " + tr(typeKey, "File");
+    if (e->type == 'f') msg += "\n" + tr("fSize", "Size") + ": " + fmt_size(e->size) + " (" + std::to_string((long long)e->size) + " B)";
+    msg += "\n" + tr("fMode", "Permissions") + ": " + e->perm;
+    if (!e->user.empty()) msg += "\n" + tr("fOwner", "Owner") + ": " + e->user + ":" + e->group;
+    std::string dt = fmt_date(e->mtime);
+    if (!dt.empty()) msg += "\n" + tr("fTime", "Modified") + ": " + dt;
+    if (!e->link.empty()) msg += "\n" + tr("fTarget", "Link target") + ": " + e->link;
+    text_open(tr("infoTitle", "Properties"), msg);
 }
 
-// ---------------------------------------------------------------- меню приложения (Options / F10)
+static void pkgq_open()
+{
+    g_pkgq = PkgQueueView();
+    g_pollAt = 0;
+    focus_push(F_PKGQ);
+}
+
+static void act_install()
+{
+    Panel& p = g_panels[g_active];
+    std::vector<std::string> names = targets(p), paths;
+    for (auto& n : names) {
+        for (auto& e : p.items) if (e.name == n && is_pkg(e)) paths.push_back(join_path(p.path, n));
+    }
+    if (paths.empty()) { text_open(tr("install", "Install PKG"), tr("pkgNone", "No .pkg files selected"), true); return; }
+    std::string nm = paths.size() == 1 ? "\"" + base_of(paths[0]) + "\"" : std::to_string(paths.size()) + " " + tr("items", "items");
+    std::string body = p.path.compare(0, 5, "/smb/") == 0 ? tr("installSmbNote", "") : "";
+    confirm_open(tr_sub("installQ", "Install {n}?", { { "n", nm } }), body, tr("install", "Install PKG"),
+                 [paths]() { act_async([paths](std::string& err) { return service_pkg_install(paths, err); }, []() { pkgq_open(); }); });
+}
+
+static void act_find()
+{
+    std::string q;
+    if (!ime_text(tr("find", "Find"), "", q) || q.empty()) return;
+    int pi = g_active;
+    std::string base = g_panels[pi].path;
+    auto res = std::make_shared<FindResult>();
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++; redraw();
+    async_run(ASYNC_ACT, [base, q, res, err, ok]() { *ok = service_find(base, q, *res, *err); },
+        [pi, res, err, ok]() {
+            g_busy--; redraw();
+            if (!*ok) { error_open(*err); return; }
+            if (res->hits.empty()) { text_open(tr("find", "Find"), tr("noResults", "Nothing found")); return; }
+            std::vector<std::string> items;
+            for (auto& h : res->hits) items.push_back((h.type == 'd' ? "/" : "") + h.path + (h.type == 'f' ? "  (" + fmt_size(h.size) + ")" : ""));
+            std::string note = tr_sub("scannedN", "checked {n} items", { { "n", std::to_string(res->scanned) } }) + (res->trunc ? ". " + tr("truncNote", "") : "");
+            std::vector<FindHit> hits = res->hits;
+            pick_open(tr("find", "Find"), note, items, [pi, hits](int i) {
+                if (i < 0 || i >= (int)hits.size()) return;
+                const FindHit& h = hits[i];
+                if (h.type == 'd') panel_load(pi, h.path, "");
+                else panel_load(pi, parent_of(h.path), base_of(h.path));
+            });
+        });
+}
+
+static void act_roots()
+{
+    int pi = g_active;
+    auto roots = std::make_shared<std::vector<RootView>>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++; redraw();
+    async_run(ASYNC_ACT, [roots, ok]() { std::string v; *ok = service_roots(*roots, v); },
+        [pi, roots, ok]() {
+            g_busy--; redraw();
+            if (!*ok) { error_open("noconn"); return; }
+            std::vector<std::string> items, paths;
+            for (auto& r : *roots) { items.push_back(r.path + (r.smb ? "  (SMB)" : "")); paths.push_back(r.path); }
+            pick_open(tr("roots", "Go to..."), "", items, [pi, paths](int i) { if (i >= 0 && i < (int)paths.size()) panel_load(pi, paths[i], ""); });
+        });
+}
+
+static void act_log()
+{
+    auto txt = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++; redraw();
+    async_run(ASYNC_ACT, [txt, ok]() { *ok = service_log(16384, *txt); },
+        [txt, ok]() { g_busy--; redraw(); if (!*ok) { error_open("noconn"); return; } text_open(tr("logTitle", "Log"), *txt); g_tv.scroll = std::max(0, (int)g_tv.lines.size() - 24); });
+}
+
+// ---------------------------------------------------------------- SMB
+
+static void smb_open_list()
+{
+    auto list = std::make_shared<std::vector<SmbConnView>>();
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++; redraw();
+    async_run(ASYNC_ACT, [list, err, ok]() { *ok = service_smb_list(*list, *err); },
+        [list, err, ok]() {
+            g_busy--; redraw();
+            if (!*ok) { error_open(*err); return; }
+            g_smbList = *list;
+            g_smbCur = 0; g_smbScroll = 0;
+            focus_push(F_SMBLIST);
+        });
+}
+
+static void smb_edit_open(const SmbConnView* c)
+{
+    g_sf = SmbForm();
+    if (c) { g_sf.c = *c; g_sf.editing = true; g_sf.hasPass = c->hasPass; if (!c->share.empty()) g_sf.shares.push_back(c->share); }
+    g_sf.cur = c ? 1 : 0;
+    g_sf.status = c && c->share.empty() ? tr("smbPickShare", "") : "";
+    focus_push(F_SMBEDIT);
+}
+
+static void smb_status(const std::string& s, bool err) { g_sf.status = s; g_sf.statusErr = err; redraw(); }
+
+static void smb_scan_start()
+{
+    smb_status(tr("smbConnecting", "Connecting..."), false);
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    async_run(ASYNC_ACT, [err, ok]() { *ok = service_smb_scan_start(*err); },
+        [err, ok]() {
+            if (g_focus != F_SMBEDIT) return;
+            if (!*ok && *err != "busy") { smb_status(tr_err(*err), true); return; }
+            g_sf.scanning = true; g_smbNextPoll = 0; redraw();
+        });
+}
+
+static void smb_poll_step(uint64_t now)
+{
+    if (!g_sf.scanning || g_focus != F_SMBEDIT || g_smbPollBusy || now < g_smbNextPoll) return;
+    g_smbPollBusy = true;
+    auto st = std::make_shared<SmbScanView>();
+    auto ok = std::make_shared<bool>(false);
+    async_run(ASYNC_POLL, [st, ok]() { *ok = service_smb_scan_state(*st); },
+        [st, ok]() {
+            g_smbPollBusy = false;
+            if (!g_sf.scanning) return;
+            if (!*ok) { g_sf.scanning = false; smb_status(tr_err("noconn"), true); return; }
+            if (st->running) {
+                smb_status(tr_sub("smbFinding", "Scanning... {d}/{t}", { { "d", std::to_string(st->done) }, { "t", std::to_string(st->total) } }), false);
+                g_smbNextPoll = now_us() + 700000ULL;
+                return;
+            }
+            g_sf.scanning = false;
+            if (st->found.empty()) { smb_status(tr("smbFoundNone", "No SMB servers found"), false); return; }
+            smb_status(tr_sub("smbFound", "Found servers: {n}", { { "n", std::to_string(st->found.size()) } }), false);
+            std::vector<std::string> found = st->found;
+            if (g_sf.c.host.empty()) g_sf.c.host = found[0];
+            pick_open(tr("smbHost", "Server address"), "", found, [found](int i) { if (i >= 0 && i < (int)found.size()) g_sf.c.host = found[i]; });
+        });
+}
+
+static void smb_connect()
+{
+    if (g_sf.c.host.empty()) { smb_status(tr("smbNoHost", "Enter the server address"), true); return; }
+    smb_status(tr("smbConnecting", "Connecting..."), false);
+    SmbConnView c = g_sf.c; std::string pass = g_sf.pass;
+    auto shares = std::make_shared<std::vector<std::string>>();
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    async_run(ASYNC_ACT, [c, pass, shares, err, ok]() { *ok = service_smb_shares(c, pass, *shares, *err); },
+        [shares, err, ok]() {
+            if (g_focus != F_SMBEDIT) return;
+            if (!*ok) { smb_status(tr_err(*err), true); return; }
+            g_sf.shares = *shares;
+            bool has = std::find(shares->begin(), shares->end(), g_sf.c.share) != shares->end();
+            if (!has) g_sf.c.share = shares->empty() ? "" : (*shares)[0];
+            smb_status(tr_sub("smbSharesN", "Shares found: {n}", { { "n", std::to_string(shares->size()) } }), false);
+        });
+}
+
+static void smb_save()
+{
+    if (g_sf.c.share.empty()) { smb_status(tr("smbNoShare", "Choose a share"), true); return; }
+    smb_status(tr("smbConnecting", "Connecting..."), false);
+    SmbConnView c = g_sf.c; std::string pass = g_sf.pass;
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    async_run(ASYNC_ACT, [c, pass, err, ok]() { *ok = service_smb_save(c, pass, *err); },
+        [err, ok]() {
+            if (g_focus != F_SMBEDIT) return;
+            if (!*ok) { smb_status(tr_err(*err), true); return; }
+            focus_pop();          // закрыть форму
+            refresh_all();        // в списке корней появилась новая папка
+            focus_pop();          // закрыть и список (он устарел); меню SMB откроется заново
+            smb_open_list();
+        });
+}
+
+static void smb_pick_share()
+{
+    if (g_sf.shares.empty()) {
+        std::string v;
+        if (ime_text(tr("smbShare", "Share name"), g_sf.c.share, v)) g_sf.c.share = v;
+        return;
+    }
+    std::vector<std::string> items = g_sf.shares;
+    items.push_back(tr("smbManual", "Enter manually..."));
+    int cur = 0;
+    for (size_t i = 0; i < g_sf.shares.size(); i++) if (g_sf.shares[i] == g_sf.c.share) cur = (int)i;
+    pick_open(tr("smbShare", "Share name"), "", items, [](int i) {
+        if (i < 0) return;
+        if (i >= (int)g_sf.shares.size()) { std::string v; if (ime_text(tr("smbShare", "Share name"), g_sf.c.share, v)) g_sf.c.share = v; }
+        else g_sf.c.share = g_sf.shares[i];
+    }, cur);
+}
+
+static void smb_form_activate(int row)
+{
+    std::string v;
+    switch (row) {
+    case 0: if (!g_sf.editing && ime_text(tr("smbAlias", "Mount folder name"), g_sf.c.alias, v)) g_sf.c.alias = v; break;
+    case 1: if (ime_text(tr("smbHost", "Server address"), g_sf.c.host, v)) g_sf.c.host = v; break;
+    case 2: if (ime_text(tr("smbUser", "User"), g_sf.c.user, v)) g_sf.c.user = v; break;
+    case 3: if (ime_text(tr("smbPass", "Password"), "", v)) { g_sf.pass = v; g_sf.hasPass = false; } break;
+    case 4: if (ime_text(tr("smbDomain", "Domain"), g_sf.c.domain, v)) g_sf.c.domain = v; break;
+    case 5: smb_pick_share(); break;
+    case 6: smb_scan_start(); break;
+    case 7: smb_connect(); break;
+    case 8: smb_save(); break;
+    case 9: focus_pop(); break;
+    }
+    redraw();
+}
+
+static void smb_delete_conn(const SmbConnView& c)
+{
+    std::string alias = c.alias;
+    confirm_open(tr("smbDel", "Remove"), tr_sub("smbDelQ", "Remove \"{n}\"?", { { "n", alias } }), tr("smbDel", "Remove"),
+        [alias]() {
+            act_async([alias](std::string& err) { return service_smb_del(alias, err); },
+                      []() { refresh_all(); focus_pop(); smb_open_list(); });
+        });
+}
+
+// ---------------------------------------------------------------- меню (как в вебе)
+
+enum MenuId { M_THEME, M_LANG, M_FIND, M_PROPS, M_INSTALL, M_PKGQ, M_RENAME, M_ROOTS, M_SMB, M_LOG, M_SUPPORT, M_HELP, M_UNSAFE, M_APPEXIT, M_QUIT, M_CLOSE, M_COUNT };
+
+struct MenuItem { MenuId id; const char* key; const char* def; };
+static const MenuItem MENU[M_COUNT] = {
+    { M_THEME, "theme", "Theme" }, { M_LANG, "lang", "Language" },
+    { M_FIND, "find", "Find" }, { M_PROPS, "infoTitle", "Properties" }, { M_INSTALL, "install", "Install PKG" },
+    { M_PKGQ, "pkgQueue", "Installation queue" }, { M_RENAME, "rename", "Rename" }, { M_ROOTS, "roots", "Go to..." },
+    { M_SMB, "smbTitle", "Network folders (SMB)" }, { M_LOG, "logTitle", "Log" }, { M_SUPPORT, "support", "Support the project" },
+    { M_HELP, "help", "Help" }, { M_UNSAFE, "unsafeBtn", "Allow changes in system areas" },
+    { M_APPEXIT, "appExit", "Exit" }, { M_QUIT, "quit", "Quit" }, { M_CLOSE, "close", "Close" }
+};
 
 static std::string theme_name(const std::string& th)
 {
@@ -668,117 +691,299 @@ static std::string theme_name(const std::string& th)
     return tr("themeClassic", "Classic");
 }
 
-static std::string g_theme = "classic";
-
-static const int APP_MENU_N = 4;
-
-static void appmenu_run(int idx)
+static void cycle_theme(int dir)
 {
-    if (idx == 0) {
-        g_theme = g_theme == "classic" ? "dark" : g_theme == "dark" ? "light" : "classic";
-        service_state_set_theme(g_theme);
-    } else if (idx == 1) {
-        i18n_set(i18n_current() == "ru" ? "en" : "ru");
-    } else if (idx == 2) {
+    std::string cur = gfx_theme();
+    std::string order[3] = { "classic", "dark", "light" };
+    int i = cur == "dark" ? 1 : cur == "light" ? 2 : 0;
+    std::string nt = order[(i + dir + 3) % 3];
+    gfx_set_theme(nt);
+    act_async([nt](std::string&) { return service_state_set_theme(nt); }, NULL);
+    redraw();
+}
+
+static void cycle_lang()
+{
+    i18n_set(i18n_current() == "ru" ? "en" : "ru");
+    redraw();
+}
+
+static void set_unsafe(bool on) { g_unsafe = on; service_set_unsafe(on); redraw(); }
+
+static void menu_run(MenuId id)
+{
+    switch (id) {
+    case M_THEME: cycle_theme(1); return;
+    case M_LANG: cycle_lang(); return;
+    case M_UNSAFE: set_unsafe(!g_unsafe); return;
+    default: break;
+    }
+    focus_pop();     // как в вебе: меню закрывается, затем выполняется действие
+    switch (id) {
+    case M_FIND: act_find(); break;
+    case M_PROPS: act_props(); break;
+    case M_INSTALL: act_install(); break;
+    case M_PKGQ: pkgq_open(); break;
+    case M_RENAME: act_rename(); break;
+    case M_ROOTS: act_roots(); break;
+    case M_SMB: smb_open_list(); break;
+    case M_LOG: act_log(); break;
+    case M_SUPPORT:
         if (!g_qrTried) { g_qrTried = true; g_qrSbpOk = g_qrSbp.load("/app0/assets/images/qr_sbp.png"); g_qrPaypalOk = g_qrPaypal.load("/app0/assets/images/qr_paypal.png"); }
-        g_focus = FOCUS_DONATE;
-    } else if (idx == 3) {
-        exit(0);
+        focus_push(F_DONATE);
+        break;
+    case M_HELP: text_open(tr("helpTitle", "Keys"), tr("helpPad", "")); break;
+    case M_APPEXIT: exit(0); break;
+    case M_QUIT:
+        confirm_open(tr("quit", "Quit"), tr("quitQ", "Shut down ps4commander?"), tr("quit", "Quit"), []() {
+            act_async([](std::string&) { service_quit(); return true; }, []() { exit(0); });
+        });
+        break;
+    default: break;
+    }
+}
+
+// ---------------------------------------------------------------- нижняя строка F1-F10 и контекстное меню
+
+static const char* KEY_NAMES[10] = { "help", "refresh", "view", "edit", "copy", "move", "mkdir", "del", "chmod", "menu" };
+static const char* KEY_DEFAULT[10] = { "Help", "Refresh", "View", "Edit", "Copy", "Move", "MkDir", "Delete", "Chmod", "Menu" };
+
+static void open_menu() { g_menuCursor = 0; focus_push(F_MENU); }
+
+static void run_bar_action(int idx)
+{
+    switch (idx) {
+    case 0: text_open(tr("helpTitle", "Keys"), tr("helpPad", "")); break;
+    case 1: refresh_all(); break;
+    case 2: act_view(); break;
+    case 3: act_edit(); break;
+    case 4: act_copy_move(false); break;
+    case 5: act_copy_move(true); break;
+    case 6: act_mkdir(); break;
+    case 7: act_delete(); break;
+    case 8: act_chmod(); break;
+    case 9: open_menu(); break;
+    }
+}
+
+// Контекстное меню на файле (Треугольник): Rename / Select / Properties / Cancel (+ Install для .pkg).
+static const char* CTX_KEYS[5] = { "rename", "select", "infoTitle", "cancel", "install" };
+static const char* CTX_DEFS[5] = { "Rename", "Select", "Properties", "Cancel", "Install PKG" };
+static int ctx_count(bool pkg) { return pkg ? 5 : 4; }
+
+static void toggle_mark(Panel& p, bool advance)
+{
+    Entry2* e = panel_cur(p);
+    if (!e || e->name == "..") return;
+    auto it = std::find(p.sel.begin(), p.sel.end(), e->name);
+    if (it == p.sel.end()) p.sel.push_back(e->name); else p.sel.erase(it);
+    if (advance && !p.items.empty()) p.cur = (p.cur + 1) % (int)p.items.size();   // как в Total Commander
+}
+
+static void ctx_run(int idx)
+{
+    focus_pop();
+    switch (idx) {
+    case 0: act_rename(); break;
+    case 1: toggle_mark(g_panels[g_active], false); break;
+    case 2: act_props(); break;
+    case 4: act_install(); break;
+    default: break;
     }
 }
 
 // ---------------------------------------------------------------- отрисовка
 
+static Color dlg_dim() { return T.modern ? T.dim : Color{ 70, 70, 70 }; }
+static int rad() { return T.radius; }
+
+static void dlg_box(int w, int h, const std::string& title, int& x, int& y)
+{
+    x = (FRAME_WIDTH - w) / 2; y = (FRAME_HEIGHT - h) / 2;
+    draw_frame(x, y, w, h, rad(), T.dlgBorder, T.dlgBg);
+    if (!title.empty()) {
+        put_center(FRAME_WIDTH / 2, fit(title, (w - 60) / cell_w()), y + 44, T.dlgFg, T.dlgBg);
+        fill(x + 24, y + 58, w - 48, 1, T.dlgBorder);
+    }
+}
+
+static void dlg_hint(int x, int y, int w, int h, const std::string& s)
+{
+    (void)y;
+    put_center_rich(x + w / 2, s, y + h - 22, dlg_dim(), T.dlgBg);
+}
+
+static void draw_row_hl(int x, int y, int w, int rowH, bool hl)
+{
+    if (hl) fill_rounded(x, y, w, rowH, T.modern ? 10 : 0, T.curBg);
+}
+
+
 static void draw_panel_box(int idx, int x, int w)
 {
     Panel& p = g_panels[idx];
     bool act = idx == g_active;
-    draw_frame(x, PANEL_TOP, w, PANEL_H, 10, act ? C_EDGE_A : C_EDGE, C_PANEL);
+    Color edge = p.danger ? T.warn : (act ? T.accent : T.border);
+    draw_frame(x, PANEL_TOP, w, PANEL_H, rad() > 0 ? 18 : 0, edge, T.panel);
 
-    std::string title = p.err.empty() ? p.path : (p.path + "  [" + p.err + "]");
-    draw_text(fit(title, (w - 20) / g_cellW), x + 10, PANEL_TOP + 26, act ? C_ACCENT : C_DIM, C_PANEL);
-    fill(x + 6, PANEL_TOP + 36, w - 12, 1, C_EDGE);
+    // заголовок: путь (активная панель подсвечена)
+    Color hb = act ? T.curBg : (T.modern ? T.surface2 : T.panel);
+    Color hf = act ? T.curFg : (T.modern ? T.dim : T.border);
+    fill(x, PANEL_TOP, w, HEAD_H, hb);
+    std::string title = p.path;
+    if (p.loading) title += "   " + tr("loading", "Loading...");
+    else if (!p.err.empty()) title += "   [" + tr_err(p.err) + "]";
+    draw_text(fit(title, (w - 24) / cell_w()), x + 12, PANEL_TOP + 24, p.err.empty() || p.loading ? hf : T.warn, hb);
 
-    int rows = (PANEL_H - 50) / ROW_H;
+    // шапка столбцов
+    int sizeW = 8 * cell_w() + 10, dateW = 16 * cell_w() + 14, attrW = 4 * cell_w() + 14;
+    int colTop = PANEL_TOP + HEAD_H;
+    fill(x, colTop + COLH_H - 1, w, 1, T.border);
+    int xs = x + w - 10 - attrW - dateW - sizeW, xd = x + w - 10 - attrW - dateW, xa = x + w - 10 - attrW;
+    draw_text(tr("name", "Name"), x + 30, colTop + 20, T.dim, T.panel);
+    draw_text(tr("size", "Size"), xs + sizeW - 4 * cell_w() - 6, colTop + 20, T.dim, T.panel);
+    draw_text(tr("date", "Date"), xd + 4, colTop + 20, T.dim, T.panel);
+    draw_text(tr("attr", "Attr"), xa + 4, colTop + 20, T.dim, T.panel);
+
+    // строки
+    int rows = (PANEL_H - HEAD_H - COLH_H - FOOT_H) / ROW_H;
     if (p.cur < p.scroll) p.scroll = p.cur;
     if (p.cur >= p.scroll + rows) p.scroll = p.cur - rows + 1;
-    int nameW = (w - 20 - 220) / g_cellW;
-    if (nameW < 6) nameW = 6;
-
+    if (p.scroll < 0) p.scroll = 0;
+    int listTop = colTop + COLH_H;
+    int nameChars = (xs - (x + 30) - 8) / cell_w();
     for (int row = 0; row < rows; row++) {
         int i = p.scroll + row;
         if (i >= (int)p.items.size()) break;
         Entry2& e = p.items[i];
-        int ry = PANEL_TOP + 46 + row * ROW_H;
+        int ry = listTop + row * ROW_H;
         bool isCur = i == p.cur;
-        bool isSel = std::find(p.sel.begin(), p.sel.end(), e.name) != p.sel.end();
-        Color rowBg = isCur && act ? C_CUR_BG : (row % 2 ? C_ROW2 : C_PANEL);
-        fill(x + 4, ry, w - 8, ROW_H, rowBg);
-        Color fg = e.name == ".." ? C_DIM : (isSel ? C_SEL : (e.type == 'd' ? C_DIR : C_TEXT));
-        std::string nm = e.name == ".." ? ".." : (e.type == 'd' ? (e.name + "/") : e.name);
-        draw_text((isSel ? "*" : " ") + fit(nm, nameW), x + 10, ry + ROW_H - 9, fg, rowBg);
-        if (e.name != ".." && e.type != 'd') draw_text(fmt_size(e.size), x + w - 210, ry + ROW_H - 9, C_DIM, rowBg);
-        else if (e.type == 'l') draw_text("->", x + w - 210, ry + ROW_H - 9, C_DIM, rowBg);
+        bool marked = e.name != ".." && is_marked(p, e.name);
+        Color bg = T.panel, fg = T.text;
+        if (isCur) { bg = act ? T.curBg : T.curInactive; fg = act ? T.curFg : T.text; }
+        if (isCur) fill_rounded(x + 4, ry, w - 8, ROW_H, T.modern ? 8 : 0, bg);
+        else bg = T.panel;
+        if (!(isCur && act)) {
+            if (e.type == 'l') fg = T.ok;
+            if (e.isDir()) fg = T.dir;
+            if (marked) fg = T.sel;
+        } else if (marked) fg = T.sel;
+        int base = ry + ROW_H - 8;
+        if (marked) draw_text("*", x + 12, base, T.sel, bg);
+        std::string nm = e.name == ".." ? ".." : (e.isDir() ? "/" : "") + e.name + (e.type == 'l' && !e.link.empty() ? " -> " + e.link : "");
+        draw_text(fit(nm, nameChars), x + 30, base, fg, bg);
+        if (e.name != "..") {
+            std::string sz = e.type == 'd' ? tr("dirTag", "<DIR>") : (e.type == 'l' && e.td) ? tr("lnkTag", "<LNK>") : e.type == 'f' ? fmt_size(e.size) : "";
+            draw_text(sz, xs + sizeW - count_cp(sz) * cell_w() - 6, base, fg, bg);
+            draw_text(fmt_date(e.mtime), xd + 4, base, fg, bg);
+            draw_text(e.perm, xa + 4, base, fg, bg);
+        } else if (e.name == "..") {
+            std::string sz = tr("dirTag", "<DIR>");
+            draw_text(sz, xs + sizeW - count_cp(sz) * cell_w() - 6, base, fg, bg);
+        }
     }
+
+    // подвал: слева - отмеченное или сведения о файле, справа - свободное место
+    int fy = PANEL_TOP + PANEL_H - FOOT_H;
+    fill(x, fy, w, 1, T.border);
+    std::string left;
+    if (!p.sel.empty()) {
+        int64_t sz = 0;
+        for (auto& e : p.items) if (e.type == 'f' && is_marked(p, e.name)) sz += e.size;
+        left = tr("selected", "selected") + ": " + std::to_string(p.sel.size()) + " (" + fmt_size(sz) + ")";
+    } else if (Entry2* e = panel_cur(p)) {
+        if (e->name != "..") left = (e->type == 'f' ? fmt_size(e->size) + "  " : "") + e->perm + "  " + e->user + ":" + e->group;
+        else left = std::to_string(p.items.size() - (p.hasUp ? 1 : 0)) + " " + tr("items", "items");
+    }
+    std::string right;
+    if (p.freeB >= 0) right = fmt_size(p.freeB) + " " + tr("free", "free") + (p.totalB > 0 ? " " + tr("of", "of") + " " + fmt_size(p.totalB) : "");
+    int rw = count_cp(right) * cell_w();
+    draw_text(fit(left, (w - 40 - rw) / cell_w()), x + 12, fy + 24, T.dim, T.panel);
+    draw_text(right, x + w - 12 - rw, fy + 24, T.dim, T.panel);
+}
+
+static void draw_topbar()
+{
+    draw_text("PS4 Commander", MARGIN_X, TOP_BASE, T.dir, T.bg);
+    int x = MARGIN_X + 14 * cell_w() + 14;
+    draw_text(APP_VERSION, x, TOP_BASE, T.border, T.bg);
+    x += (int)strlen(APP_VERSION) * cell_w() + 24;
+    fill_rounded(x, TOP_BASE - 14, 12, 12, 6, g_svc == S_READY ? T.ok : T.warn);
+    x += 28;
+    if (g_unsafe) draw_text(tr("unsafeOn", "SYSTEM AREAS UNLOCKED"), x, TOP_BASE, T.warn, T.bg);
+    if (g_busy > 0 || g_panels[0].loading || g_panels[1].loading) {
+        static const char* spin[4] = { "|", "/", "-", "\\" };
+        int f = (int)((now_us() / 150000ULL) % 4);
+        draw_text(spin[f], x + 40 * cell_w(), TOP_BASE, T.sel, T.bg);
+    }
+    std::string mt = tr("menu", "Menu");
+    int bw = (count_cp(mt) + 4) * cell_w() + 40;
+    int bx = FRAME_WIDTH - MARGIN_X - bw;
+    fill_rounded(bx, TOP_BASE - 26, bw, 34, T.modern ? 17 : 0, T.modern ? T.surface2 : T.bg);
+    if (!T.modern) { fill(bx, TOP_BASE - 26, bw, 1, T.border); fill(bx, TOP_BASE + 7, bw, 1, T.border); fill(bx, TOP_BASE - 26, 1, 34, T.border); fill(bx + bw - 1, TOP_BASE - 26, 1, 34, T.border); }
+    draw_rich("{options} " + mt, bx + 20, TOP_BASE - 2, T.modern ? T.text : T.border, T.modern ? T.surface2 : T.bg);
 }
 
 static void draw_bar()
 {
-    int n = 10;
-    int gap = 6;
+    int n = 10, gap = T.modern ? 8 : 2;
     int bw = (FRAME_WIDTH - 2 * MARGIN_X - gap * (n - 1)) / n;
     for (int i = 0; i < n; i++) {
         int bx = MARGIN_X + i * (bw + gap);
-        bool hl = g_focus == FOCUS_BAR && i == g_barCursor;
-        fill_rounded(bx, BAR_TOP, bw, BAR_H, 8, hl ? C_BARBTN_F : C_BARBTN);
+        bool hl = g_focus == F_BAR && i == g_barCursor;
+        Color bg = hl ? T.curBg : T.barBg, fg = hl ? T.curFg : T.barFg;
+        if (T.modern) fill_rounded(bx, BAR_TOP, bw, BAR_H, 12, bg); else fill(bx, BAR_TOP, bw, BAR_H, bg);
         char num[4]; snprintf(num, sizeof(num), "%d", i + 1);
-        std::string label = tr(KEY_NAMES[i], KEY_DEFAULT[i]);
-        std::string s = std::string(num) + " " + fit(label, (bw - 20) / g_cellW);
-        draw_text(s, bx + 10, BAR_TOP + BAR_H / 2 + 7, hl ? C_TEXT : C_DIM, hl ? C_BARBTN_F : C_BARBTN);
+        int nw = (int)strlen(num) * cell_w() + 14;
+        if (T.modern) fill_rounded(bx + 6, BAR_TOP + 8, nw, BAR_H - 16, 8, T.barNum); else fill(bx, BAR_TOP, nw, BAR_H, T.barNum);
+        draw_text(num, bx + (T.modern ? 13 : 7), BAR_TOP + BAR_H / 2 + 7, T.barNumFg, T.barNum);
+        draw_text(fit(tr(KEY_NAMES[i], KEY_DEFAULT[i]), (bw - nw - 18) / cell_w()), bx + nw + (T.modern ? 14 : 8), BAR_TOP + BAR_H / 2 + 7, fg, bg);
     }
 }
 
-static void draw_hint_and_credit()
+// Подсказки по кнопкам внизу: значки для кнопок с фигурами, L1/R1/L2/R2 - обычным текстом (значки обрезались).
+static void draw_hints_credit()
 {
-    std::string hint;
-    if (g_focus == FOCUS_PANEL) hint = "{arrows} " + tr("hint_nav", "move") + "   {cross} " + tr("hint_enter", "open") +
-        "   {circle} " + tr("hint_up", "up") + "   {square} " + tr("hint_mark", "mark") + "   {triangle} " + tr("hint_ctx", "menu") +
-        "   {l1}/{r1} " + tr("hint_swap", "switch panel") + "   {l2}/{r2} " + tr("hint_bar", "bottom bar");
-    else if (g_focus == FOCUS_BAR) hint = "{l2}/{r2} " + tr("hint_pick", "choose") + "   {cross} " + tr("hint_do", "do") + "   {circle} " + tr("hint_back", "back");
-    else hint = "{circle} " + tr("hint_back", "back");
-    put_center_rich(FRAME_WIDTH / 2, hint, BAR_TOP + BAR_H + 30, C_DIM, C_BG);
-
-    std::string credit = "PS4 Commander v" APP_VERSION "  Created by SergioPoverony and Mr.Claude";
-    draw_text(credit, (FRAME_WIDTH - count_cp(credit) * g_cellW) / 2, BAR_TOP + BAR_H + 58, C_DIMMER, C_BG);
-}
-
-static void draw_overlay_panel(int w, int h, const char* title_key, const char* title_def)
-{
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
-    draw_frame(x, y, w, h, 16, C_EDGE_A, C_PANEL);
-    if (title_key) put_center(FRAME_WIDTH / 2, tr(title_key, title_def), y + 44, C_TEXT, C_PANEL);
-}
-
-static void draw_appmenu()
-{
-    int w = 560, h = 60 + APP_MENU_N * 56 + 30;
-    draw_overlay_panel(w, h, "menu", "Menu");
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
-    // theme/lang/support - те же ключи, что в меню веб-версии (showMenu в web/index.html).
-    // "appExit" - новый ключ: в вебе аналога нет (там просто закрывают страницу), а здесь
-    // нужно явно закрыть приложение, не останавливая службу.
-    const char* labels[APP_MENU_N] = { "theme", "lang", "support", "appExit" };
-    const char* defs[APP_MENU_N] = { "Theme", "Language", "Support the project", "Exit" };
-    std::string vals[APP_MENU_N] = { theme_name(g_theme), i18n_current() == "ru" ? "Русский" : "English", "", "" };
-    for (int i = 0; i < APP_MENU_N; i++) {
-        int ry = y + 70 + i * 56;
-        bool hl = i == g_appMenuCursor;
-        if (hl) fill_rounded(x + 20, ry - 30, w - 40, 44, 10, C_CUR_BG);
-        std::string s = tr(labels[i], defs[i]);
-        if (!vals[i].empty()) s += ":  " + vals[i];
-        draw_text(s, x + 36, ry, hl ? C_TEXT : C_DIM, hl ? C_CUR_BG : C_PANEL);
+    std::string l1, l2;
+    if (g_focus == F_BAR) {
+        l1 = "L2/R2 " + tr("hint_pick", "choose") + "     {cross} " + tr("hint_do", "do") + "     {circle} " + tr("hint_back", "back");
+        l2 = "L1/R1 " + tr("hint_swap", "switch panel");
+    } else {
+        l1 = "{arrows} " + tr("hint_nav", "move") + "     {cross} " + tr("hint_enter", "open") + "     {circle} " + tr("hint_up", "up") +
+             "     {square} " + tr("hint_mark", "mark") + "     {triangle} " + tr("hint_ctx", "file menu");
+        l2 = "L1/R1 " + tr("hint_swap", "switch panel") + "     L2/R2 " + tr("hint_bar", "bottom bar") + "     {options} " + tr("menu", "Menu");
     }
-    put_center_rich(FRAME_WIDTH / 2, "{arrows} " + tr("hint_nav", "move") + "   {cross} " + tr("hint_do", "do") + "   {circle} " + tr("hint_back", "back"), y + h - 20, C_DIM, C_PANEL);
+    put_center_rich(FRAME_WIDTH / 2, l1, HINT1_Y, T.dim, T.bg);
+    put_center_rich(FRAME_WIDTH / 2, l2, HINT2_Y, T.dim, T.bg);
+    std::string credit = "ps4commander v" APP_VERSION " \xC2\xB7 Created by SergioPoverony and Mr.Claude";
+    put_center(FRAME_WIDTH / 2, credit, CREDIT_Y, T.dimmer, T.bg);
+}
+
+static void draw_menu()
+{
+    int w = 900, rowH = 38;
+    std::string warn = tr("unsafeWarn", "");
+    std::vector<std::string> wl = wrap_lines(warn, (w - 100) / cell_w());
+    int h = 120 + M_COUNT * rowH + (int)wl.size() * 26 + 30;
+    int x, y; dlg_box(w, h, tr("menu", "Menu"), x, y);
+    int ry = y + 76;
+    for (int i = 0; i < M_COUNT; i++) {
+        const MenuItem& it = MENU[i];
+        bool hl = i == g_menuCursor;
+        draw_row_hl(x + 20, ry - 4, w - 40, rowH - 2, hl);
+        Color fg = hl ? T.curFg : T.dlgFg, bg = hl ? T.curBg : T.dlgBg;
+        std::string s = tr(it.key, it.def);
+        if (it.id == M_THEME) s += ":   < " + theme_name(gfx_theme()) + " >";
+        else if (it.id == M_LANG) s += ":   < " + std::string(i18n_current() == "ru" ? "Russian" : "English") + " >";
+        else if (it.id == M_UNSAFE) s = std::string(g_unsafe ? "[x] " : "[ ] ") + s;
+        else if (it.id == M_QUIT) fg = hl ? T.curFg : (T.modern ? T.warn : Color{ 150, 0, 0 });
+        draw_text(s, x + 40, ry + 24, fg, bg);
+        ry += rowH;
+        if (it.id == M_UNSAFE) {
+            for (auto& l : wl) { draw_text(l, x + 60, ry + 16, T.modern ? T.warn : Color{ 150, 0, 0 }, T.dlgBg); ry += 26; }
+        }
+    }
+    dlg_hint(x, y, w, h, "{updown} " + tr("hint_nav", "move") + "    {cross} " + tr("hint_do", "do") + "    {circle} " + tr("hint_back", "back"));
 }
 
 static void draw_ctxmenu()
@@ -786,143 +991,254 @@ static void draw_ctxmenu()
     Entry2* e = panel_cur(g_panels[g_active]);
     bool pkg = e && is_pkg(*e);
     int n = ctx_count(pkg);
-    int w = 480, h = 60 + n * 52 + 30;
-    draw_overlay_panel(w, h, NULL, NULL);
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
-    put_center(FRAME_WIDTH / 2, e ? fit(e->name, (w - 40) / g_cellW) : "", y + 40, C_ACCENT, C_PANEL);
-    const char* defs[5] = { "Rename", "Select", "Properties", "Cancel", "Install PKG" };
+    int w = 520, h = 100 + n * 48 + 40;
+    int x, y; dlg_box(w, h, "", x, y);
+    put_center(FRAME_WIDTH / 2, e ? fit(e->name, (w - 40) / cell_w()) : "", y + 44, T.modern ? T.accent : T.dlgFg, T.dlgBg);
+    fill(x + 24, y + 58, w - 48, 1, T.dlgBorder);
     for (int i = 0; i < n; i++) {
-        int ry = y + 72 + i * 52;
+        int ry = y + 76 + i * 48;
         bool hl = i == g_ctxCursor;
-        if (hl) fill_rounded(x + 20, ry - 28, w - 40, 42, 10, C_CUR_BG);
-        draw_text(tr(CTX_ITEMS[i], defs[i]), x + 36, ry, hl ? C_TEXT : C_DIM, hl ? C_CUR_BG : C_PANEL);
+        draw_row_hl(x + 20, ry - 4, w - 40, 42, hl);
+        draw_text(tr(CTX_KEYS[i], CTX_DEFS[i]), x + 40, ry + 24, hl ? T.curFg : T.dlgFg, hl ? T.curBg : T.dlgBg);
     }
 }
 
 static void draw_confirm()
 {
-    int w = 760, h = 280;
-    draw_overlay_panel(w, h, NULL, NULL);
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
-    int maxc = (w - 80) / (g_cellW > 0 ? g_cellW : 1);
-    // Тексты и ключи переводов здесь - те же, что у веб-версии (del/items/delWarn/
-    // move/copy/overwrite/install/installQ), чтобы приложение выглядело максимально
-    // похоже на веб, а не по образцу других проектов.
-    std::string title, body, yesLbl;
-    if (g_confirm == CONF_DELETE) {
-        yesLbl = tr("del", "Delete");
-        title = yesLbl + " " + std::to_string(g_confirmPaths.size()) + " " + tr("items", "items") + "?";
-        body = tr("delWarn", "This cannot be undone.");
-    } else if (g_confirm == CONF_OVERWRITE) {
-        yesLbl = g_confirmOp == "move" ? tr("move", "Move") : tr("copy", "Copy");
-        title = yesLbl + " " + std::to_string(g_confirmPaths.size()) + " " + tr("items", "items") + "?";
-        body = tr("overwrite", "Overwrite existing files");
-    } else if (g_confirm == CONF_PKG_INSTALL) {
-        yesLbl = tr("install", "Install PKG");
-        std::string nm = g_confirmPaths.empty() ? "" : base_of(g_confirmPaths[0]);
-        title = tr_fmt("installQ", "Install {n} via the system installer?", "\"" + nm + "\"");
-    }
-    put_center(FRAME_WIDTH / 2, title, y + 70, C_TEXT, C_PANEL);
-    draw_wrapped(body, x + 40, y + 110, maxc, 3, 32, C_DIM, C_PANEL);
-    put_center_rich(FRAME_WIDTH / 2, "{cross} " + yesLbl + "     {circle} " + tr("cancel", "Cancel"), y + h - 40, C_TEXT, C_PANEL);
+    int w = 960, h = 300;
+    int x, y; dlg_box(w, h, "", x, y);
+    int maxc = (w - 80) / cell_w();
+    std::vector<std::string> tl = wrap_lines(g_cf.title, maxc);
+    int ty = y + 60;
+    for (size_t i = 0; i < tl.size() && i < 3; i++) { put_center(FRAME_WIDTH / 2, tl[i], ty, T.dlgFg, T.dlgBg); ty += 34; }
+    std::vector<std::string> bl = wrap_lines(g_cf.body, maxc);
+    for (size_t i = 0; i < bl.size() && i < 3; i++) { draw_text(bl[i], x + 40, ty + 20, dlg_dim(), T.dlgBg); ty += 28; }
+    dlg_hint(x, y, w, h, "{cross} " + g_cf.yes + "          {circle} " + tr("cancel", "Cancel"));
 }
 
-static void draw_msg()
+static void draw_text_view()
 {
-    int w = 900, h = 420;
-    draw_overlay_panel(w, h, NULL, NULL);
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
-    int maxc = (w - 80) / (g_cellW > 0 ? g_cellW : 1);
-    draw_wrapped(g_msg, x + 40, y + 50, maxc, 11, 28, g_msgIsError ? C_RED : C_TEXT, C_PANEL);
-    put_center_rich(FRAME_WIDTH / 2, "{circle} " + tr("close", "Close"), y + h - 30, C_DIM, C_PANEL);
+    int maxc = 0;
+    for (auto& l : g_tv.lines) maxc = std::max(maxc, count_cp(l));
+    int w = std::min(1560, std::max(760, maxc * cell_w() + 80));
+    int lineH = 26;
+    int rows = std::min((int)g_tv.lines.size(), 28);
+    if (rows < 3) rows = 3;
+    int h = 150 + rows * lineH + 30;
+    int x, y; dlg_box(w, h, g_tv.title, x, y);
+    int maxScroll = std::max(0, (int)g_tv.lines.size() - rows);
+    if (g_tv.scroll > maxScroll) g_tv.scroll = maxScroll;
+    if (g_tv.scroll < 0) g_tv.scroll = 0;
+    for (int r = 0; r < rows; r++) {
+        int i = g_tv.scroll + r;
+        if (i >= (int)g_tv.lines.size()) break;
+        draw_text(g_tv.lines[i], x + 40, y + 100 + r * lineH, g_tv.error ? (T.modern ? T.warn : Color{ 150, 0, 0 }) : T.dlgFg, T.dlgBg);
+    }
+    std::string hint = "{circle} " + tr("close", "Close");
+    if ((int)g_tv.lines.size() > rows) hint = "{updown} L2/R2 " + tr("hint_nav", "move") + "    " + hint;
+    dlg_hint(x, y, w, h, hint);
+}
+
+static void draw_pick()
+{
+    int w = 1200, rowH = 34, vis = 16;
+    int n = (int)g_pick.items.size();
+    int rows = std::min(n, vis);
+    int h = 150 + rows * rowH + (g_pick.note.empty() ? 0 : 30) + 20;
+    int x, y; dlg_box(w, h, g_pick.title, x, y);
+    if (g_pick.cur < g_pick.scroll) g_pick.scroll = g_pick.cur;
+    if (g_pick.cur >= g_pick.scroll + rows) g_pick.scroll = g_pick.cur - rows + 1;
+    int ry = y + 78;
+    for (int r = 0; r < rows; r++) {
+        int i = g_pick.scroll + r;
+        bool hl = i == g_pick.cur;
+        draw_row_hl(x + 20, ry - 2, w - 40, rowH - 2, hl);
+        draw_text(fit(g_pick.items[i], (w - 100) / cell_w()), x + 40, ry + 22, hl ? T.curFg : T.dlgFg, hl ? T.curBg : T.dlgBg);
+        ry += rowH;
+    }
+    if (!g_pick.note.empty()) draw_text(fit(g_pick.note, (w - 80) / cell_w()), x + 40, ry + 24, dlg_dim(), T.dlgBg);
+    dlg_hint(x, y, w, h, "{updown} " + tr("hint_nav", "move") + "    {cross} " + tr("hint_pick", "choose") + "    {circle} " + tr("hint_back", "back"));
+}
+
+static void draw_bar_progress(int x, int y, int w, double frac)
+{
+    int bh = 22;
+    fill_rounded(x, y, w, bh, T.modern ? 10 : 0, T.modern ? T.surface2 : T.panel);
+    if (frac > 0) fill_rounded(x, y, std::max(4, (int)(w * std::min(1.0, frac))), bh, T.modern ? 10 : 0, T.modern ? T.accent : T.curBg);
 }
 
 static void draw_progress()
 {
-    int w = 760, h = 220;
-    draw_overlay_panel(w, h, NULL, NULL);
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
-    std::string line1, line2;
-    double frac = 0;
-    if (g_prog == PROG_JOB) {
-        JobView jv; service_job_state(jv);
-        line1 = jv.op + ": " + jv.cur;
-        line2 = fmt_size(jv.done) + " / " + fmt_size(jv.total);
-        if (jv.total > 0) frac = (double)jv.done / (double)jv.total;
-        if (jv.state != "running" && jv.state != "scan") { g_prog = PROG_NONE; g_focus = FOCUS_PANEL; panel_refresh(g_panels[0]); panel_refresh(g_panels[1]); return; }
-    } else if (g_prog == PROG_PKG) {
-        PkgQueueView qv; service_pkg_state(qv);
-        if (!qv.items.empty()) { auto& it = qv.items.back(); line1 = it.name + "  " + it.status; line2 = it.msg; if (it.total > 0) frac = (double)it.done / (double)it.total; }
-        if (!qv.active) { g_prog = PROG_NONE; g_focus = FOCUS_PANEL; return; }
+    int w = 900, h = 260;
+    int x, y; dlg_box(w, h, g_job.op.empty() ? tr("loading", "Loading...") : g_job.op, x, y);
+    double frac = g_job.total > 0 ? (double)g_job.done / (double)g_job.total : 0;
+    draw_text(fit(g_job.cur, (w - 80) / cell_w()), x + 40, y + 110, T.dlgFg, T.dlgBg);
+    std::string s = fmt_size(g_job.done) + " / " + fmt_size(g_job.total);
+    if (g_job.filesTotal > 0) s += "    " + std::to_string(g_job.filesDone) + " / " + std::to_string(g_job.filesTotal);
+    draw_text(s, x + 40, y + 148, dlg_dim(), T.dlgBg);
+    draw_bar_progress(x + 40, y + 168, w - 80, frac);
+    dlg_hint(x, y, w, h, "{cross} " + tr("cancel", "Cancel"));
+}
+
+static std::string pkg_status_text(const std::string& st)
+{
+    static const struct { const char* st; const char* key; const char* def; } M[] = {
+        { "queued", "stQueued", "queued" }, { "registering", "stRegistering", "registering" }, { "installing", "stInstalling", "installing" },
+        { "done", "stDone", "installed" }, { "already_installed", "stAlready", "already installed" }, { "failed", "stFailed", "failed" },
+        { "cancelled", "stCancelled", "cancelled" } };
+    for (auto& m : M) if (st == m.st) return tr(m.key, m.def);
+    return tr("stQueued", "queued");
+}
+
+static void draw_pkgq()
+{
+    int w = 1300, rowH = 54;
+    int n = std::min((int)g_pkgq.items.size(), 8);
+    int h = 190 + std::max(1, n) * rowH;
+    int x, y; dlg_box(w, h, tr("pkgTitle", "Package installation"), x, y);
+    if (g_pkgq.items.empty()) draw_text(tr("loading", "Loading..."), x + 40, y + 110, dlg_dim(), T.dlgBg);
+    int start = std::max(0, (int)g_pkgq.items.size() - n);
+    for (int r = 0; r < n; r++) {
+        const PkgItemView& it = g_pkgq.items[start + r];
+        int ry = y + 96 + r * rowH;
+        int pc = it.total > 0 ? (int)(100.0 * it.done / it.total) : 0;
+        std::string line = it.name + "   " + pkg_status_text(it.status) + (pc > 0 && it.status == "installing" ? "  " + std::to_string(pc) + "%" : "");
+        draw_text(fit(line, (w - 80) / cell_w()), x + 40, ry + 20, T.dlgFg, T.dlgBg);
+        if (!it.msg.empty()) draw_text(fit(it.msg, (w - 80) / cell_w()), x + 40, ry + 44, dlg_dim(), T.dlgBg);
     }
-    put_center(FRAME_WIDTH / 2, fit(line1, (w - 80) / g_cellW), y + 60, C_TEXT, C_PANEL);
-    draw_text(fit(line2, (w - 80) / g_cellW), x + 40, y + 100, C_DIM, C_PANEL);
-    int bx = x + 40, by = y + 130, bw = w - 80, bh = 20;
-    fill_rounded(bx, by, bw, bh, 8, C_ROW2);
-    if (frac > 0) fill_rounded(bx, by, (int)(bw * std::min(1.0, frac)), bh, 8, C_ACCENT);
-    put_center_rich(FRAME_WIDTH / 2, "{cross} " + tr("hint_cancel", "cancel"), y + h - 30, C_DIM, C_PANEL);
+    dlg_hint(x, y, w, h, "{cross} " + tr("cancel", "Cancel") + "          {circle} " + tr("close", "Close"));
 }
 
 static void draw_donate()
 {
-    int w = 700, h = 560;
-    draw_overlay_panel(w, h, "support", "Support the project");
-    int x = (FRAME_WIDTH - w) / 2, y = (FRAME_HEIGHT - h) / 2;
+    int w = 700, h = 580;
+    int x, y; dlg_box(w, h, tr("support", "Support the project"), x, y);
     bool ru = i18n_current() == "ru";
     Image& img = ru ? g_qrSbp : g_qrPaypal;
     bool ok = ru ? g_qrSbpOk : g_qrPaypalOk;
     if (ok && img.pixels) {
         int iw = 420, ih = 420 * img.height / img.width;
-        int ix = x + (w - iw) / 2, iy = y + 70;
+        int ix = x + (w - iw) / 2, iy = y + 84;
         for (int yy = 0; yy < ih; yy++) {
             int sy = yy * img.height / ih;
             for (int xx = 0; xx < iw; xx++) {
                 int sx = xx * img.width / iw;
                 unsigned char* px = img.pixels + (size_t)(sy * img.width + sx) * 4;
-                Color c = { px[0], px[1], px[2] };
-                g_scene->PutPixel(ix + xx, iy + yy, c);
+                fill(ix + xx, iy + yy, 1, 1, Color{ px[0], px[1], px[2] });
             }
         }
-        put_center(FRAME_WIDTH / 2, tr("supportCap", "PayPal"), y + h - 70, C_DIM, C_PANEL);
+        put_center(FRAME_WIDTH / 2, tr("supportCap", "PayPal"), y + h - 70, dlg_dim(), T.dlgBg);
     } else {
-        put_center(FRAME_WIDTH / 2, tr("noQr", "QR code not found in the app"), y + h / 2, C_DIM, C_PANEL);
+        put_center(FRAME_WIDTH / 2, tr("noQr", "QR code not found in the app"), y + h / 2, dlg_dim(), T.dlgBg);
     }
-    put_center_rich(FRAME_WIDTH / 2, "{circle} " + tr("close", "Close"), y + h - 30, C_DIM, C_PANEL);
+    dlg_hint(x, y, w, h, "{circle} " + tr("close", "Close"));
+}
+
+static void draw_smb_list()
+{
+    int w = 1300, rowH = 38, vis = 12;
+    int n = (int)g_smbList.size() + 1;             // первая строка - "Добавить"
+    int rows = std::min(n, vis);
+    int h = 170 + rows * rowH + 40;
+    int x, y; dlg_box(w, h, tr("smbTitle", "Network folders (SMB)"), x, y);
+    if (g_smbCur < g_smbScroll) g_smbScroll = g_smbCur;
+    if (g_smbCur >= g_smbScroll + rows) g_smbScroll = g_smbCur - rows + 1;
+    int ry = y + 78;
+    for (int r = 0; r < rows; r++) {
+        int i = g_smbScroll + r;
+        bool hl = i == g_smbCur;
+        draw_row_hl(x + 20, ry - 2, w - 40, rowH - 2, hl);
+        Color fg = hl ? T.curFg : T.dlgFg, bg = hl ? T.curBg : T.dlgBg;
+        std::string s;
+        if (i == 0) s = "+ " + tr("smbAdd", "Add");
+        else { const SmbConnView& c = g_smbList[i - 1]; s = c.alias + "   \\\\" + c.host + "\\" + c.share + (c.user.empty() ? "" : "   (" + c.user + ")"); }
+        draw_text(fit(s, (w - 100) / cell_w()), x + 40, ry + 24, fg, bg);
+        ry += rowH;
+    }
+    if (g_smbList.empty()) draw_text(tr("smbNone", "No network folders yet"), x + 40, ry + 28, dlg_dim(), T.dlgBg);
+    dlg_hint(x, y, w, h, "{cross} " + tr("smbOpen", "Open") + "    {square} " + tr("smbEdit", "Edit") + "    {triangle} " + tr("smbDel", "Remove") + "    {circle} " + tr("close", "Close"));
+}
+
+static void draw_smb_edit()
+{
+    int w = 1200, rowH = 40;
+    const int N = 10;
+    int h = 130 + N * rowH + 80;
+    int x, y; dlg_box(w, h, tr("smbTitle", "Network folders (SMB)"), x, y);
+    std::string pass = g_sf.pass.empty() ? (g_sf.hasPass ? tr("smbPassKeep", "(keep)") : "") : std::string((size_t)count_cp(g_sf.pass), '*');
+    struct Row { std::string label, value; bool action; };
+    Row rows[N] = {
+        { tr("smbAlias", "Mount folder name"), g_sf.c.alias, false },
+        { tr("smbHost", "Server address"), g_sf.c.host, false },
+        { tr("smbUser", "User"), g_sf.c.user, false },
+        { tr("smbPass", "Password"), pass, false },
+        { tr("smbDomain", "Domain"), g_sf.c.domain, false },
+        { tr("smbShare", "Share name"), g_sf.c.share, false },
+        { tr("smbFind", "Find"), "", true },
+        { tr("smbShares", "Connect"), "", true },
+        { tr("save", "Save"), "", true },
+        { tr("cancel", "Cancel"), "", true } };
+    int ry = y + 76;
+    int labelW = 42 * cell_w();
+    for (int i = 0; i < N; i++) {
+        bool hl = i == g_sf.cur;
+        draw_row_hl(x + 20, ry - 2, w - 40, rowH - 2, hl);
+        bool disabled = (i == 0 && g_sf.editing);
+        Color fg = hl ? T.curFg : (disabled ? dlg_dim() : T.dlgFg), bg = hl ? T.curBg : T.dlgBg;
+        if (rows[i].action) draw_text("[ " + rows[i].label + " ]", x + 40, ry + 26, fg, bg);
+        else {
+            draw_text(fit(rows[i].label, 41), x + 40, ry + 26, fg, bg);
+            draw_text(fit(rows[i].value, (w - 100 - labelW) / cell_w()), x + 40 + labelW, ry + 26, fg, bg);
+        }
+        ry += rowH;
+    }
+    if (!g_sf.status.empty()) draw_text(fit(g_sf.status, (w - 80) / cell_w()), x + 40, ry + 26, g_sf.statusErr ? (T.modern ? T.warn : Color{ 150, 0, 0 }) : dlg_dim(), T.dlgBg);
+    dlg_hint(x, y, w, h, "{updown} " + tr("hint_nav", "move") + "    {cross} " + tr("hint_do", "do") + "    {circle} " + tr("hint_back", "back"));
 }
 
 static void draw_connecting()
 {
-    std::string s = g_svc == S_CHECK ? tr("svc_checking", "Looking for the ps4commander service...")
-                   : g_svc == S_STARTING ? tr("svc_starting", "Starting the service via BinLoader...")
-                   : tr("svc_failed", "Service not responding. " ) + g_svcErr;
-    put_center(FRAME_WIDTH / 2, s, FRAME_HEIGHT / 2, g_svc == S_FAILED ? C_RED : C_DIM, C_BG);
-    if (g_svc == S_FAILED) put_center_rich(FRAME_WIDTH / 2, "{cross} " + tr("hint_retry", "try again"), FRAME_HEIGHT / 2 + 50, C_DIM, C_BG);
+    fill(0, 0, FRAME_WIDTH, FRAME_HEIGHT, T.bg);
+    draw_text("PS4 Commander", MARGIN_X, TOP_BASE, T.dir, T.bg);
+    std::string s;
+    if (g_svc == S_FAILED) s = tr("svc_failed", "Service not responding. ") + g_svcErr;
+    else s = g_svcStage == 0 ? tr("svc_checking", "Looking for the ps4commander service...") : tr("svc_starting", "Starting the service via BinLoader...");
+    put_center(FRAME_WIDTH / 2, s, FRAME_HEIGHT / 2, g_svc == S_FAILED ? T.warn : T.dim, T.bg);
+    if (g_svc == S_FAILED) put_center_rich(FRAME_WIDTH / 2, "{cross} " + tr("hint_retry", "try again") + "     {circle} " + tr("appExit", "Exit"), FRAME_HEIGHT / 2 + 50, T.dim, T.bg);
+    put_center(FRAME_WIDTH / 2, "ps4commander v" APP_VERSION " \xC2\xB7 Created by SergioPoverony and Mr.Claude", CREDIT_Y, T.dimmer, T.bg);
 }
 
 static void draw_all()
 {
-    fill(0, 0, FRAME_WIDTH, FRAME_HEIGHT, C_BG);
-    draw_text("PS4 Commander", MARGIN_X, 56, C_ACCENT, C_BG);
-
     if (g_svc != S_READY) { draw_connecting(); return; }
-
+    fill(0, 0, FRAME_WIDTH, FRAME_HEIGHT, T.bg);
+    draw_topbar();
     int halfW = (FRAME_WIDTH - 2 * MARGIN_X - 16) / 2;
     draw_panel_box(0, MARGIN_X, halfW);
     draw_panel_box(1, MARGIN_X + halfW + 16, halfW);
     draw_bar();
-    draw_hint_and_credit();
+    draw_hints_credit();
 
-    if (g_focus == FOCUS_APPMENU) draw_appmenu();
-    else if (g_focus == FOCUS_CTX) draw_ctxmenu();
-    else if (g_focus == FOCUS_CONFIRM) draw_confirm();
-    else if (g_focus == FOCUS_MSG) draw_msg();
-    else if (g_focus == FOCUS_PROGRESS) draw_progress();
-    else if (g_focus == FOCUS_DONATE) draw_donate();
+    switch (g_focus) {
+    case F_MENU: draw_menu(); break;
+    case F_CTX: draw_ctxmenu(); break;
+    case F_CONFIRM: draw_confirm(); break;
+    case F_TEXT: draw_text_view(); break;
+    case F_PROGRESS: draw_progress(); break;
+    case F_PKGQ: draw_pkgq(); break;
+    case F_DONATE: draw_donate(); break;
+    case F_PICK: draw_pick(); break;
+    case F_SMBLIST: draw_smb_list(); break;
+    case F_SMBEDIT: draw_smb_edit(); break;
+    default: break;
+    }
 }
 
 // ---------------------------------------------------------------- геймпад и системная клавиатура
 
 static int g_pad = -1;
+static bool g_imeReady = false;
+static int g_userId = 0;
 
 static bool pad_init()
 {
@@ -979,7 +1295,7 @@ static bool ime_text(const std::string& title, const std::string& initial, std::
 
     OrbisDialogStatus st;
     while ((st = sceImeDialogGetStatus()) == ORBIS_DIALOG_STATUS_RUNNING) {
-        if (g_scene) { g_scene->SubmitFlip(g_frameID); g_scene->FrameWait(g_frameID); g_scene->FrameBufferSwap(); g_frameID++; }
+        gfx_present();
         usleep(16000);
     }
 
@@ -990,23 +1306,64 @@ static bool ime_text(const std::string& title, const std::string& initial, std::
         if (sceImeDialogGetResult(&res) == 0 && res.endstatus == ORBIS_DIALOG_OK) { out = utf16_to_utf8(buf, 256); ok = true; }
     }
     sceImeDialogTerm();
-    g_redraw = 2;
+    redraw();
     return ok;
+}
+
+// ---------------------------------------------------------------- подключение к службе (в фоне)
+
+struct SvcRes { bool ok = false; std::string err, l, r, theme; };
+
+static void svc_worker(SvcRes& res)
+{
+    std::vector<RootView> roots; std::string ver;
+    if (service_roots(roots, ver) && ver == APP_VERSION) { res.ok = true; }
+    else {
+        g_svcStage = 1;
+        logf_("svc: service missing or version differs (service=%s app=%s), sending payload", ver.c_str(), APP_VERSION);
+        std::string err; bool connFailed = false;
+        if (!service_send_payload(err, &connFailed)) { res.err = connFailed ? "noloader" : err; return; }
+        service_install_autorun(err);
+        bool ok = false;
+        for (int i = 0; i < 25 && !ok; i++) {
+            usleep(400000);
+            if (service_roots(roots, ver) && ver == APP_VERSION) ok = true;
+        }
+        if (!ok) { res.err = "timeout"; return; }
+        res.ok = true;
+    }
+    service_state_get(res.l, res.r, res.theme);
+}
+
+static void svc_begin()
+{
+    g_svc = S_CHECK; g_svcStage = 0; g_svcErr.clear();
+    redraw();
+    auto res = std::make_shared<SvcRes>();
+    async_run(ASYNC_ACT, [res]() { svc_worker(*res); },
+        [res]() {
+            redraw();
+            if (!res->ok) {
+                g_svc = S_FAILED;
+                g_svcErr = res->err == "noloader" ? tr("svc_noloader", "BinLoader is off (GoldHEN - Servers - Enable Payloader Server).")
+                         : res->err == "timeout" ? tr("svc_timeout", "No answer from the service.") : res->err;
+                return;
+            }
+            gfx_set_theme(res->theme);
+            g_svc = S_READY;
+            g_panels[0].reqId = 0; g_panels[1].reqId = 0;
+            panel_load(0, res->l.empty() ? "/data" : res->l, "");
+            panel_load(1, res->r.empty() ? "/data" : res->r, "");
+            g_stateReady = true;
+        });
 }
 
 // ---------------------------------------------------------------- инициализация и цикл
 
 bool ui_init()
 {
-    g_scene = new Scene2D(FRAME_WIDTH, FRAME_HEIGHT, FRAME_DEPTH);
-    if (!g_scene->Init(0xC000000, 2)) { logf_("ui: scene init FAILED"); return false; }
-    if (!g_scene->InitFont(&g_font, "/app0/assets/fonts/DejaVuSansMono.ttf", FONT_PX)) { logf_("ui: font init FAILED"); return false; }
-
-    FT_UInt gi = FT_Get_Char_Index(g_font, 'M');
-    if (!FT_Load_Glyph(g_font, gi, FT_LOAD_DEFAULT)) {
-        int w = (int)(g_font->glyph->advance.x >> 6);
-        if (w > 0) g_cellW = w;
-    }
+    if (!gfx_init()) return false;
+    async_init();
 
     bool padOk = pad_init();
 
@@ -1015,72 +1372,61 @@ bool ui_init()
     if (cdMod) cdMod = sceCommonDialogInitialize() == 0;
     g_imeReady = imeMod && cdMod;
     logf_("ui: ime modules ime=%d commonDialog=%d", imeMod ? 1 : 0, cdMod ? 1 : 0);
-
-    logf_("ui: ready, cell width %d, pad %s", g_cellW, padOk ? "ok" : "FAILED");
+    logf_("ui: ready, cell width %d, pad %s", cell_w(), padOk ? "ok" : "FAILED");
     g_ready = true;
+    svc_begin();
     return true;
 }
 
-static void svc_step(uint64_t now)
+// Автоповтор удерживаемой кнопки (стрелки): первое срабатывание сразу, затем после паузы - часто.
+struct Rep { bool held = false; uint64_t since = 0, last = 0; };
+static bool rep_step(Rep& r, bool down, uint64_t now)
 {
-    if (now < g_nextCheck) return;
-    if (g_svc == S_CHECK || g_svc == S_FAILED) {
-        std::vector<RootView> roots;
-        std::string version;
-        if (service_roots(roots, version)) {
-            if (version != APP_VERSION) {
-                logf_("svc: version mismatch (service=%s app=%s), sending payload", version.c_str(), APP_VERSION);
-                g_svc = S_STARTING; g_startTries = 0; g_nextCheck = now;
-                return;
+    if (!down) { r.held = false; return false; }
+    if (!r.held) { r.held = true; r.since = now; r.last = now; return true; }
+    if (now - r.since < 380000ULL || now - r.last < 55000ULL) return false;
+    r.last = now;
+    return true;
+}
+
+static int wrap_idx(int v, int n) { return n <= 0 ? 0 : ((v % n) + n) % n; }
+
+static void poll_progress(uint64_t now)
+{
+    bool job = g_focus == F_PROGRESS, pkg = g_focus == F_PKGQ;
+    if ((!job && !pkg) || g_pollBusy || now < g_pollAt) return;
+    g_pollBusy = true;
+    g_pollAt = now + 300000ULL;
+    auto jv = std::make_shared<JobView>();
+    auto qv = std::make_shared<PkgQueueView>();
+    async_run(ASYNC_POLL, [job, jv, qv]() { if (job) service_job_state(*jv); else service_pkg_state(*qv); },
+        [job, jv, qv]() {
+            g_pollBusy = false;
+            redraw();
+            if (job && g_focus == F_PROGRESS) {
+                g_job = *jv;
+                bool running = jv->state == "running" || jv->state == "scan";
+                // первые 400 мс не закрываем: в ответе может быть состояние предыдущего задания
+                if (!running && now_us() - g_progStart > 400000ULL && jv->ok) {
+                    focus_pop();
+                    refresh_all();
+                    if (jv->errTotal > 0) text_open(tr("errorsTitle", "Errors"), tr("errorsTitle", "Errors") + ": " + std::to_string(jv->errTotal), true);
+                }
+            } else if (!job && g_focus == F_PKGQ) {
+                g_pkgq = *qv;
             }
-            g_svc = S_READY;
-            std::string l, r, th;
-            if (service_state_get(l, r, th)) g_theme = th.empty() ? "classic" : th;
-            if (l.empty()) l = "/data";
-            if (r.empty()) r = "/data";
-            panel_load(g_panels[0], l, "");
-            panel_load(g_panels[1], r, "");
-            g_redraw = 2;
-        } else {
-            g_svc = S_STARTING; g_startTries = 0; g_nextCheck = now;
-        }
-    } else if (g_svc == S_STARTING) {
-        if (g_startTries == 0) {
-            bool connFailed = false;
-            std::string err;
-            if (!service_send_payload(err, &connFailed)) {
-                g_svc = S_FAILED;
-                g_svcErr = connFailed ? tr("svc_noloader", "BinLoader is off (GoldHEN - Servers - Enable Payloader Server).") : err;
-                g_nextCheck = now + 2000000ULL;
-                return;
-            }
-            service_install_autorun(err);
-        }
-        g_startTries++;
-        std::vector<RootView> roots; std::string version;
-        if (service_roots(roots, version) && version == APP_VERSION) {
-            g_svc = S_READY;
-            std::string l, r, th;
-            if (service_state_get(l, r, th)) g_theme = th.empty() ? "classic" : th;
-            panel_load(g_panels[0], l.empty() ? "/data" : l, "");
-            panel_load(g_panels[1], r.empty() ? "/data" : r, "");
-            g_redraw = 2;
-        } else if (g_startTries > 25) {
-            g_svc = S_FAILED; g_svcErr = tr("svc_timeout", "no answer from the service"); g_nextCheck = now + 2000000ULL;
-        } else {
-            g_nextCheck = now + 400000ULL;
-        }
-    }
+        });
 }
 
 void ui_pump()
 {
     if (!g_ready) return;
-    uint64_t now = sceKernelGetProcessTime();
-    svc_step(now);
+    uint64_t now = now_us();
+    if (async_pump()) redraw();
 
     unsigned b = pad_read();
     static unsigned prev = 0;
+    static Rep rUp, rDown, rLeft, rRight;
     unsigned pressed = b & ~prev;
     prev = b;
     bool cross = (pressed & ORBIS_PAD_BUTTON_CROSS) != 0;
@@ -1088,109 +1434,132 @@ void ui_pump()
     bool square = (pressed & ORBIS_PAD_BUTTON_SQUARE) != 0;
     bool triangle = (pressed & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
     bool options = (pressed & ORBIS_PAD_BUTTON_OPTIONS) != 0;
-    bool up = (pressed & ORBIS_PAD_BUTTON_UP) != 0;
-    bool down = (pressed & ORBIS_PAD_BUTTON_DOWN) != 0;
     bool l1 = (pressed & ORBIS_PAD_BUTTON_L1) != 0;
     bool r1 = (pressed & ORBIS_PAD_BUTTON_R1) != 0;
     bool l2 = (pressed & ORBIS_PAD_BUTTON_L2) != 0;
     bool r2 = (pressed & ORBIS_PAD_BUTTON_R2) != 0;
+    bool up = rep_step(rUp, (b & ORBIS_PAD_BUTTON_UP) != 0, now);
+    bool down = rep_step(rDown, (b & ORBIS_PAD_BUTTON_DOWN) != 0, now);
+    bool left = rep_step(rLeft, (b & ORBIS_PAD_BUTTON_LEFT) != 0, now);
+    bool right = rep_step(rRight, (b & ORBIS_PAD_BUTTON_RIGHT) != 0, now);
+    if (cross || circle || square || triangle || options || l1 || r1 || l2 || r2 || up || down || left || right) redraw();
+
+    // отложенное сохранение путей панелей в службе
+    if (g_stateAt && now >= g_stateAt && g_svc == S_READY) {
+        g_stateAt = 0;
+        std::string l = g_panels[0].path, r = g_panels[1].path;
+        async_run(ASYNC_POLL, [l, r]() { service_state_set_paths(l, r); }, NULL);
+    }
+    smb_poll_step(now);
+    poll_progress(now);
+    // индикатор загрузки и прогресс обновляем и без нажатий
+    static uint64_t lastTick = 0;
+    if (now - lastTick >= 150000ULL && (g_busy > 0 || g_panels[0].loading || g_panels[1].loading || g_svc != S_READY)) { lastTick = now; redraw(); }
 
     if (g_svc != S_READY) {
-        if (g_svc == S_FAILED && cross) { g_svc = S_CHECK; g_nextCheck = now; }
-        goto redraw;
+        if (g_svc == S_FAILED) { if (cross) svc_begin(); else if (circle) exit(0); }
+        goto present;
     }
 
-    if (g_focus == FOCUS_PROGRESS) {
-        if (cross) { if (g_prog == PROG_JOB) service_job_cancel(); else if (g_prog == PROG_PKG) service_pkg_cancel(); }
-        goto redraw;
+    switch (g_focus) {
+    case F_PROGRESS:
+        if (cross) act_async([](std::string&) { service_job_cancel(); return true; }, NULL);
+        break;
+    case F_PKGQ:
+        if (cross) act_async([](std::string&) { service_pkg_cancel(); return true; }, NULL);
+        else if (circle) focus_pop();
+        break;
+    case F_DONATE:
+        if (circle || cross) focus_pop();
+        break;
+    case F_TEXT:
+        if (circle || cross) { focus_pop(); break; }
+        if (up) g_tv.scroll--;
+        if (down) g_tv.scroll++;
+        if (l2 || left) g_tv.scroll -= 20;
+        if (r2 || right) g_tv.scroll += 20;
+        break;
+    case F_CONFIRM:
+        if (cross) { auto f = g_cf.onYes; focus_pop(); if (f) f(); }
+        else if (circle) focus_pop();
+        break;
+    case F_PICK: {
+        int n = (int)g_pick.items.size();
+        if (up) g_pick.cur = wrap_idx(g_pick.cur - 1, n);
+        if (down) g_pick.cur = wrap_idx(g_pick.cur + 1, n);
+        if (left || l2) g_pick.cur = std::max(0, g_pick.cur - 10);
+        if (right || r2) g_pick.cur = std::min(n - 1, g_pick.cur + 10);
+        if (cross) { auto cb = g_pick.onPick; int i = g_pick.cur; focus_pop(); if (cb) cb(i); }
+        else if (circle) focus_pop();
+        break;
     }
-    if (g_focus == FOCUS_DONATE) { if (circle || cross) g_focus = FOCUS_PANEL; goto redraw; }
-    if (g_focus == FOCUS_MSG) { if (circle || cross) g_focus = FOCUS_PANEL; goto redraw; }
-    if (g_focus == FOCUS_CONFIRM) {
-        if (cross) {
-            std::string err;
-            if (g_confirm == CONF_DELETE) {
-                if (service_delete(g_confirmPaths, true, err)) { g_prog = PROG_JOB; g_focus = FOCUS_PROGRESS; }
-                else { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; }
-            } else if (g_confirm == CONF_OVERWRITE) {
-                if (service_job_start(g_confirmOp, g_confirmPaths, g_confirmDest, true, true, "", err)) { g_prog = PROG_JOB; g_focus = FOCUS_PROGRESS; }
-                else { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; }
-            } else if (g_confirm == CONF_PKG_INSTALL) {
-                if (service_pkg_install(g_confirmPaths, err)) { g_prog = PROG_PKG; g_focus = FOCUS_PROGRESS; }
-                else { g_msg = tr_err(err); g_msgIsError = true; g_focus = FOCUS_MSG; }
-            }
-            g_confirm = CONF_NONE;
-        } else if (circle) { g_confirm = CONF_NONE; g_focus = FOCUS_PANEL; }
-        goto redraw;
-    }
-    if (g_focus == FOCUS_CTX) {
+    case F_CTX: {
         Entry2* e = panel_cur(g_panels[g_active]);
-        bool pkg = e && is_pkg(*e);
-        int n = ctx_count(pkg);
-        if (up || down) { g_ctxCursor = up ? (g_ctxCursor - 1 + n) % n : (g_ctxCursor + 1) % n; }
-        else if (circle) { g_focus = FOCUS_PANEL; }
-        else if (cross) {
-            if (g_ctxCursor == 3) g_focus = FOCUS_PANEL;                        // "Отмена" - всегда 4-й пункт (индекс 3)
-            else { ctx_run(g_ctxCursor, pkg); if (g_focus != FOCUS_CONFIRM) g_focus = (g_focus == FOCUS_MSG) ? FOCUS_MSG : FOCUS_PANEL; }
-        }
-        goto redraw;
+        int n = ctx_count(e && is_pkg(*e));
+        if (up) g_ctxCursor = wrap_idx(g_ctxCursor - 1, n);
+        if (down) g_ctxCursor = wrap_idx(g_ctxCursor + 1, n);
+        if (cross) ctx_run(g_ctxCursor);
+        else if (circle || triangle) focus_pop();
+        break;
     }
-    if (g_focus == FOCUS_APPMENU) {
-        if (up || down) { g_appMenuCursor = up ? (g_appMenuCursor - 1 + APP_MENU_N) % APP_MENU_N : (g_appMenuCursor + 1) % APP_MENU_N; }
-        else if (circle) { g_focus = FOCUS_PANEL; }
-        else if (cross) { appmenu_run(g_appMenuCursor); if (g_appMenuCursor != 0 && g_appMenuCursor != 1) g_focus = FOCUS_PANEL; }
-        goto redraw;
+    case F_MENU:
+        if (up) g_menuCursor = wrap_idx(g_menuCursor - 1, M_COUNT);
+        if (down) g_menuCursor = wrap_idx(g_menuCursor + 1, M_COUNT);
+        if ((left || right) && (g_menuCursor == M_THEME)) cycle_theme(right ? 1 : -1);
+        else if ((left || right) && g_menuCursor == M_LANG) cycle_lang();
+        if (cross) menu_run(MENU[g_menuCursor].id);
+        else if (circle || options) focus_pop();
+        break;
+    case F_SMBLIST: {
+        int n = (int)g_smbList.size() + 1;
+        if (up) g_smbCur = wrap_idx(g_smbCur - 1, n);
+        if (down) g_smbCur = wrap_idx(g_smbCur + 1, n);
+        if (circle) { focus_pop(); break; }
+        if (cross) {
+            if (g_smbCur == 0) smb_edit_open(NULL);
+            else { std::string alias = g_smbList[g_smbCur - 1].alias; focus_reset(); panel_load(g_active, "/smb/" + alias, ""); }
+        } else if (square && g_smbCur > 0) { SmbConnView c = g_smbList[g_smbCur - 1]; smb_edit_open(&c); }
+        else if (triangle && g_smbCur > 0) { SmbConnView c = g_smbList[g_smbCur - 1]; smb_delete_conn(c); }
+        break;
     }
-
-    if (options) { g_focus = FOCUS_APPMENU; g_appMenuCursor = 0; goto redraw; }
-
-    if (l1 || r1) {
-        g_active = 1 - g_active;
-        g_focus = FOCUS_PANEL;
-        goto redraw;
-    }
-
-    if (g_focus == FOCUS_BAR) {
-        if (l2) g_barCursor = (g_barCursor - 1 + 10) % 10;
-        else if (r2) g_barCursor = (g_barCursor + 1) % 10;
-        else if (circle || up) g_focus = FOCUS_PANEL;
-        else if (cross) { run_bar_action(g_barCursor); if (g_focus == FOCUS_BAR) g_focus = FOCUS_PANEL; }
-        goto redraw;
-    }
-
-    // FOCUS_PANEL
-    if (l2 || r2) { g_focus = FOCUS_BAR; goto redraw; }
-    {
+    case F_SMBEDIT:
+        if (up) g_sf.cur = wrap_idx(g_sf.cur - 1, 10);
+        if (down) g_sf.cur = wrap_idx(g_sf.cur + 1, 10);
+        if (cross) smb_form_activate(g_sf.cur);
+        else if (circle) { g_sf.scanning = false; focus_pop(); }
+        break;
+    case F_BAR:
+        if (l2 || left) g_barCursor = wrap_idx(g_barCursor - 1, 10);
+        else if (r2 || right) g_barCursor = wrap_idx(g_barCursor + 1, 10);
+        else if (l1 || r1) { g_active = 1 - g_active; g_focus = F_PANEL; }
+        else if (options) open_menu();
+        else if (circle || up) g_focus = F_PANEL;
+        else if (cross) { g_focus = F_PANEL; run_bar_action(g_barCursor); }
+        break;
+    case F_PANEL:
+    default: {
         Panel& p = g_panels[g_active];
-        if (up && !p.items.empty()) { p.cur = (p.cur - 1 + (int)p.items.size()) % (int)p.items.size(); }
-        else if (down && !p.items.empty()) { p.cur = (p.cur + 1) % (int)p.items.size(); }
-        else if (cross) { panel_enter(p); }
-        else if (circle) { panel_up(p); }
-        else if (square) {
-            Entry2* e = panel_cur(p);
-            if (e && e->name != "..") {
-                auto it = std::find(p.sel.begin(), p.sel.end(), e->name);
-                if (it == p.sel.end()) p.sel.push_back(e->name); else p.sel.erase(it);
-                if (!p.items.empty()) p.cur = (p.cur + 1) % (int)p.items.size();   // как в Total Commander - курсор сдвигается вниз
-            }
-        }
-        else if (triangle) {
-            Entry2* e = panel_cur(p);
-            if (e && e->name != "..") { g_ctxCursor = 0; g_focus = FOCUS_CTX; }
-        }
+        int n = (int)p.items.size();
+        int rows = (PANEL_H - HEAD_H - COLH_H - FOOT_H) / ROW_H;
+        if (options) { open_menu(); break; }
+        if (l1 || r1) { g_active = 1 - g_active; break; }
+        if (l2 || r2) { g_focus = F_BAR; break; }
+        if (up && n) p.cur = wrap_idx(p.cur - 1, n);
+        else if (down && n) p.cur = wrap_idx(p.cur + 1, n);
+        else if (left && n) p.cur = std::max(0, p.cur - (rows - 1));
+        else if (right && n) p.cur = std::min(n - 1, p.cur + (rows - 1));
+        else if (cross) panel_enter(g_active);
+        else if (circle) panel_up(g_active);
+        else if (square) toggle_mark(p, true);
+        else if (triangle) { Entry2* e = panel_cur(p); if (e && e->name != "..") { g_ctxCursor = 0; focus_push(F_CTX); } }
+        break;
+    }
     }
 
-redraw:
-    static uint64_t lastTick = 0;
-    if (now - lastTick >= 1000000ULL) { lastTick = now; g_redraw = 2; }
-    if (g_focus == FOCUS_PROGRESS) g_redraw = 2;   // прогресс обновляем каждый кадр, не только по тику
-
+present:
     if (g_redraw > 0) {
         draw_all();
-        g_scene->SubmitFlip(g_frameID);
-        g_scene->FrameWait(g_frameID);
-        g_scene->FrameBufferSwap();
-        g_frameID++;
+        gfx_present();
         g_redraw--;
         static bool hidden = false;
         if (!hidden) { hidden = true; int r = sceSystemServiceHideSplashScreen(); logf_("ui: HideSplashScreen = 0x%08X", (unsigned)r); }
