@@ -339,7 +339,7 @@ void* video_main_inner(Session* S)
     init.debugLevel = 0;
     init.basePriority = 700;
     init.numFrameBuffers = 3;
-    init.autoStart = true;
+    init.autoStart = false;       // с автостартом плеер переходит в Play до того, как мы включим потоки, и тогда EnableStream отказывает (0x806A0002)
     init.defaultLanguage = "eng";
     void* h = g_api.init(&init);
     logf_("video: sceAvPlayerInit = %p", h);
@@ -361,8 +361,6 @@ void* video_main_inner(Session* S)
 
     // Стримы включаем, когда библиотека готова (событие StateReady); если событие не пришло - всё равно пробуем,
     // а неудачные включения повторяем: сразу после разбора файла библиотека иногда отвечает ошибкой 0x806A0002.
-    for (int i = 0; i < 100 && !S->ready && !S->stop; i++) sleep_ms(50);
-    logf_("video: ready=%d", (int)S->ready.load());
     bool vEn = false, aEn = false;
     bool vTried = false, aTried = false;
     for (int i = 0; i < n && !S->stop; i++) {
@@ -378,18 +376,18 @@ void* video_main_inner(Session* S)
         else { aTried = true; logf_("video: audio stream channels=%u rate=%u", (unsigned)*(uint16_t*)&si->details[0], *(uint32_t*)&si->details[4]); }
         if (si->duration && (isV || !S->durMs)) S->durMs = (long long)si->duration;
         int er = -1;
-        for (int t = 0; t < 40 && !S->stop; t++) {
+        for (int t = 0; t < 100 && !S->stop; t++) {
             er = g_api.enable(h, (uint32_t)i);
             if (er >= 0) { logf_("video: enable stream %d ok (try %d)", i, t + 1); break; }
             if (t == 0) logf_("video: enable stream %d = 0x%08X, retrying", i, (unsigned)er);
-            sleep_ms(250);
+            sleep_ms(100);
         }
         if (er < 0) logf_("video: enable stream %d failed for good (0x%08X)", i, (unsigned)er);
         if (isV) { vEn = er >= 0; S->hasVideo = vEn ? 1 : 0; } else aEn = er >= 0;
     }
     if (!vEn && !aEn && !S->stop) { S->err = "enable"; S->state = 4; g_api.stop(h); g_api.close(h); S->player = nullptr; return NULL; }
     sleep_ms(100);
-    if (!g_api.isActive(h)) { int sr = g_api.start(h); logf_("video: sceAvPlayerStart = 0x%08X", (unsigned)sr); }
+    { int sr = g_api.start(h); logf_("video: sceAvPlayerStart = 0x%08X, active=%d", (unsigned)sr, (int)g_api.isActive(h)); }
     S->state = 2;
 
     // --- звук: забираем PCM у плеера и отдаём в AudioOut (48 кГц, стерео)
