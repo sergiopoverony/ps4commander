@@ -33,6 +33,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #top { display: flex; align-items: center; gap: 10px; color: var(--border); flex: none; }
 #top b { color: var(--dir); }
 #top .sp { flex: 1; }
+#credit { font-size: 12px; opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); display: inline-block; }
 #dot.off { background: var(--warn); }
 button { font: inherit; cursor: pointer; }
@@ -155,6 +156,7 @@ body.unsafe #unsafeTag { display: inline; }
 :root:is([data-theme="dark"], [data-theme="light"]) .pfill { background: var(--accent); }
 :root:is([data-theme="dark"], [data-theme="light"]) .viewer { border-radius: 14px; font-family: ui-monospace, "DejaVu Sans Mono", Consolas, "Liberation Mono", monospace; }
 @media (max-width: 760px) {
+  #credit { display: none; }
   #panels { flex-direction: column; }
   .col-d, .col-a { display: none; }
   #keys { grid-template-columns: repeat(5, 1fr); }
@@ -167,6 +169,7 @@ body.unsafe #unsafeTag { display: inline; }
 <div id="app">
   <div id="top">
     <span><b>PS4 Commander</b> <span id="ver">__VERSION__</span></span>
+    <span id="credit">Created by SergioPoverony and Mr.Claude · GPLv3</span>
     <span id="dot" title=""></span>
     <span id="unsafeTag"></span>
     <span class="sp"></span>
