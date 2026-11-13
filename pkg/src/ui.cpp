@@ -1079,15 +1079,24 @@ static void draw_bar()
 {
     int n = 10, gap = T.modern ? 8 : 2;
     int bw = (FRAME_WIDTH - 2 * MARGIN_X - gap * (n - 1)) / n;
+    for (int pass = 0; pass < 2; pass++)      // выбранную кнопку рисуем последней, чтобы рамка не затиралась соседями
     for (int i = 0; i < n; i++) {
         int bx = MARGIN_X + i * (bw + gap);
         bool hl = g_focus == F_BAR && i == g_barCursor;
-        Color bg = hl ? T.curBg : T.barBg, fg = hl ? T.curFg : T.barFg;
+        if (hl != (pass == 1)) continue;
+        // выбранная кнопка должна быть хорошо видна во всех темах: инверсия цветов + рамка
+        Color bg = T.barBg, fg = T.barFg, numBg = T.barNum, numFg = T.barNumFg;
+        if (hl) {
+            if (T.modern) { bg = T.accent; fg = T.accentFg; numBg = T.accentFg; numFg = T.accent; }
+            else { bg = Color{ 0, 0, 0 }; fg = T.sel; }
+        }
+        if (hl && !T.modern) { fill(bx - 3, BAR_TOP - 3, bw + 6, BAR_H + 6, T.sel); }
         if (T.modern) fill_rounded(bx, BAR_TOP, bw, BAR_H, 12, bg); else fill(bx, BAR_TOP, bw, BAR_H, bg);
+        if (hl && T.modern) { fill_rounded(bx - 3, BAR_TOP - 3, bw + 6, BAR_H + 6, 15, T.text); fill_rounded(bx, BAR_TOP, bw, BAR_H, 12, bg); }
         char num[4]; snprintf(num, sizeof(num), "%d", i + 1);
         int nw = (int)strlen(num) * cell_w() + 14;
-        if (T.modern) fill_rounded(bx + 6, BAR_TOP + 8, nw, BAR_H - 16, 8, T.barNum); else fill(bx, BAR_TOP, nw, BAR_H, T.barNum);
-        draw_text(num, bx + (T.modern ? 13 : 7), BAR_TOP + BAR_H / 2 + 7, T.barNumFg, T.barNum);
+        if (T.modern) fill_rounded(bx + 6, BAR_TOP + 8, nw, BAR_H - 16, 8, numBg); else fill(bx, BAR_TOP, nw, BAR_H, numBg);
+        draw_text(num, bx + (T.modern ? 13 : 7), BAR_TOP + BAR_H / 2 + 7, numFg, numBg);
         draw_text(fit(tr(KEY_NAMES[i], KEY_DEFAULT[i]), (bw - nw - 18) / cell_w()), bx + nw + (T.modern ? 14 : 8), BAR_TOP + BAR_H / 2 + 7, fg, bg);
     }
 }
