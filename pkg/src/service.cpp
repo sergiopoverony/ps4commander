@@ -245,6 +245,15 @@ bool service_view(const std::string& path, int64_t maxLen, std::string& data, st
     return true;
 }
 
+bool service_download(const std::string& path, std::string& data, std::string& err)
+{
+    HttpResult r = http_get(SERVICE_HOST, SERVICE_PORT, "/api/download?inline=1&path=" + urlenc(path), 120000);
+    if (!r.connected) { err = "noconn"; return false; }
+    if (r.status != 200) { err = "http"; return false; }
+    data.swap(r.body);
+    return true;
+}
+
 bool service_send_payload(std::string& err, bool* connectFailed)
 {
     if (connectFailed) *connectFailed = false;

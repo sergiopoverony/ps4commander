@@ -6,6 +6,7 @@
 #include "gfx.h"
 #include "async.h"
 #include "image.h"
+#include "media.h"
 #include "i18n.h"
 #include "log.h"
 
@@ -38,16 +39,16 @@ extern "C" int sceSystemServiceHideSplashScreen(void);
 static const int MARGIN_X  = 36;
 static const int TOP_BASE  = 38;          // базовая линия верхней строки
 static const int PANEL_TOP = 56;
-static const int PANEL_H   = 800;
+static const int PANEL_H   = 830;
 static const int HEAD_H    = 34;          // заголовок панели (путь)
 static const int COLH_H    = 28;          // шапка столбцов (Name/Size/Date/Attr)
 static const int FOOT_H    = 34;          // подвал панели (сведения/свободное место)
 static const int ROW_H     = 28;
-static const int BAR_TOP   = PANEL_TOP + PANEL_H + 10;
+static const int NAME_Y    = PANEL_TOP + PANEL_H + 28;    // строка с именем выбранного файла/папки (как #msg в вебе)
+static const int BAR_TOP   = PANEL_TOP + PANEL_H + 42;
 static const int BAR_H     = 42;
-static const int HINT1_Y   = BAR_TOP + BAR_H + 38;
-static const int HINT2_Y   = HINT1_Y + 32;
-static const int CREDIT_Y  = HINT2_Y + 40;
+static const int HINT_Y    = BAR_TOP + BAR_H + 42;        // подсказка по кнопкам - одной строкой
+static const int CREDIT_Y  = 1052;                        // версия и авторы - у нижнего края экрана
 
 static int g_redraw = 2;                  // сколько кадров ещё рисовать (2 - оба буфера экрана)
 static bool g_ready = false;
@@ -148,6 +149,7 @@ static Panel g_panels[2];
 static int g_active = 0;
 static bool g_unsafe = false;        // "разрешить изменения в системных областях"
 static int  g_busy = 0;              // сколько фоновых действий выполняется (для индикатора)
+static int  g_userId = 0;            // пользователь PS4 (для звука и системной клавиатуры)
 static bool g_stateReady = false;
 static uint64_t g_stateAt = 0;       // когда сохранить пути панелей в службе (0 - не надо)
 
@@ -215,6 +217,8 @@ static void panel_up(int pi)
     if (p.hasUp) panel_load(pi, parent_of(p.path), base_of(p.path));
 }
 
+static void open_file(int pi, bool viaCross);
+
 static void panel_enter(int pi)
 {
     Panel& p = g_panels[pi];
@@ -222,6 +226,7 @@ static void panel_enter(int pi)
     if (!e) return;
     if (e->name == "..") { panel_up(pi); return; }
     if (e->isDir()) panel_load(pi, join_path(p.path, e->name), "");
+    else open_file(pi, true);      // Крест на файле - как щелчок в браузере
 }
 
 // ---------------------------------------------------------------- состояние интерфейса
@@ -231,7 +236,7 @@ static Svc g_svc = S_CHECK;
 static std::string g_svcErr;
 static volatile int g_svcStage = 0;       // 0 - ищем службу, 1 - запускаем через BinLoader
 
-enum Focus { F_PANEL, F_BAR, F_MENU, F_CTX, F_CONFIRM, F_TEXT, F_PROGRESS, F_PKGQ, F_DONATE, F_PICK, F_SMBLIST, F_SMBEDIT };
+enum Focus { F_IMAGE, F_AUDIO, F_PANEL, F_BAR, F_MENU, F_CTX, F_CONFIRM, F_TEXT, F_PROGRESS, F_PKGQ, F_DONATE, F_PICK, F_SMBLIST, F_SMBEDIT };
 static Focus g_focus = F_PANEL;
 static std::vector<Focus> g_fstack;
 static void focus_push(Focus f) { g_fstack.push_back(g_focus); g_focus = f; redraw(); }
@@ -391,17 +396,13 @@ static void act_rename()
     act_async([=](std::string& err) { return service_rename(from, to, err); }, [=]() { panel_refresh(pi); });
 }
 
-static void act_view()
+static void view_text(const std::string& path, const std::string& name)
 {
-    Panel& p = g_panels[g_active];
-    Entry2* e = panel_cur(p);
-    if (!e || e->name == ".." || e->type != 'f') return;
-    std::string path = join_path(p.path, e->name), name = e->name;
     auto data = std::make_shared<std::string>();
     auto err = std::make_shared<std::string>();
     auto ok = std::make_shared<bool>(false);
     g_busy++; redraw();
-    async_run(ASYNC_ACT, [path, data, err, ok]() { *ok = service_view(path, 60000, *data, *err); },
+    async_run(ASYNC_ACT, [path, data, err, ok]() { *ok = service_view(path, 400000, *data, *err); },
         [name, data, err, ok]() {
             g_busy--; redraw();
             if (!*ok) { error_open(*err); return; }
@@ -411,7 +412,7 @@ static void act_view()
             std::string txt;
             if (bin) {
                 char b[16];
-                for (size_t off = 0; off < data->size() && off < 4096; off += 16) {
+                for (size_t off = 0; off < data->size() && off < 16384; off += 16) {
                     snprintf(b, sizeof(b), "%06zx  ", off); txt += b;
                     std::string asc;
                     for (size_t i = 0; i < 16; i++) {
@@ -453,6 +454,14 @@ static void pkgq_open()
     focus_push(F_PKGQ);
 }
 
+static void install_confirm(const std::vector<std::string>& paths, const std::string& dir)
+{
+    std::string nm = paths.size() == 1 ? "\"" + base_of(paths[0]) + "\"" : std::to_string(paths.size()) + " " + tr("items", "items");
+    std::string body = dir.compare(0, 5, "/smb/") == 0 ? tr("installSmbNote", "") : "";
+    confirm_open(tr_sub("installQ", "Install {n}?", { { "n", nm } }), body, tr("install", "Install PKG"),
+                 [paths]() { act_async([paths](std::string& err) { return service_pkg_install(paths, err); }, []() { pkgq_open(); }); });
+}
+
 static void act_install()
 {
     Panel& p = g_panels[g_active];
@@ -461,10 +470,121 @@ static void act_install()
         for (auto& e : p.items) if (e.name == n && is_pkg(e)) paths.push_back(join_path(p.path, n));
     }
     if (paths.empty()) { text_open(tr("install", "Install PKG"), tr("pkgNone", "No .pkg files selected"), true); return; }
-    std::string nm = paths.size() == 1 ? "\"" + base_of(paths[0]) + "\"" : std::to_string(paths.size()) + " " + tr("items", "items");
-    std::string body = p.path.compare(0, 5, "/smb/") == 0 ? tr("installSmbNote", "") : "";
-    confirm_open(tr_sub("installQ", "Install {n}?", { { "n", nm } }), body, tr("install", "Install PKG"),
-                 [paths]() { act_async([paths](std::string& err) { return service_pkg_install(paths, err); }, []() { pkgq_open(); }); });
+    install_confirm(paths, p.path);
+}
+
+// ---------------------------------------------------------------- открытие файлов по типу (картинки, музыка, текст)
+
+static std::string ext_of(const std::string& n)
+{
+    size_t i = n.find_last_of('.');
+    return i == std::string::npos || i + 1 >= n.size() ? "" : lower(n.substr(i + 1));
+}
+static bool in_list(const std::string& e, std::initializer_list<const char*> l) { for (auto s : l) if (e == s) return true; return false; }
+static bool is_image_ext(const std::string& e) { return in_list(e, { "png", "jpg", "jpeg", "bmp", "gif" }); }
+static bool is_audio_ext(const std::string& e) { return in_list(e, { "mp3", "ogg", "wav" }); }
+static bool is_audio_unsupported(const std::string& e) { return in_list(e, { "flac", "m4a", "aac", "wma", "opus", "mid", "midi", "ac3", "at9" }); }
+static bool is_video_ext(const std::string& e) { return in_list(e, { "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "wmv", "flv", "mpg", "mpeg", "3gp" }); }
+static const int64_t MEDIA_MAX = 32LL * 1024 * 1024 - 4096;    // службу читаем целиком в память, потолок ответа 32 МБ
+
+// --- просмотр картинок
+struct ImgView {
+    Picture pic;
+    bool ok = false, loading = false;
+    std::string name;
+    std::vector<std::string> list;
+    int idx = 0;
+    int req = 0;
+    int origW = 0;
+};
+static ImgView g_iv;
+
+static void img_load(int idx)
+{
+    if (idx < 0 || idx >= (int)g_iv.list.size()) return;
+    g_iv.idx = idx; g_iv.loading = true; g_iv.ok = false;
+    std::string path = g_iv.list[idx];
+    g_iv.name = base_of(path);
+    int id = ++g_iv.req;
+    redraw();
+    auto pic = std::make_shared<Picture>();
+    auto ok = std::make_shared<bool>(false);
+    async_run(ASYNC_ACT,
+        [id, path, pic, ok]() {
+            if (g_iv.req != id) return;
+            std::string data, err;
+            if (!service_download(path, data, err)) return;
+            if (g_iv.req != id) return;
+            *ok = picture_decode(data, FRAME_WIDTH, 1000, *pic);
+        },
+        [id, pic, ok]() {
+            if (g_iv.req != id) return;
+            g_iv.loading = false;
+            g_iv.ok = *ok;
+            if (*ok) g_iv.pic = std::move(*pic);
+            redraw();
+        });
+}
+
+static void img_open(int pi)
+{
+    Panel& p = g_panels[pi];
+    g_iv.list.clear();
+    int start = 0;
+    for (size_t i = 0; i < p.items.size(); i++) {
+        const Entry2& e = p.items[i];
+        if (e.name == ".." || e.isDir() || !is_image_ext(ext_of(e.name))) continue;
+        if ((int)i == p.cur) start = (int)g_iv.list.size();
+        g_iv.list.push_back(join_path(p.path, e.name));
+    }
+    if (g_iv.list.empty()) return;
+    g_iv.pic = Picture();
+    focus_push(F_IMAGE);
+    img_load(start);
+}
+
+// --- музыка
+struct AudioUi { std::string name; };
+static AudioUi g_au;
+
+static void audio_open(const std::string& path, const std::string& name, const std::string& ext)
+{
+    auto data = std::make_shared<std::string>();
+    auto err = std::make_shared<std::string>();
+    auto ok = std::make_shared<bool>(false);
+    g_busy++; redraw();
+    async_run(ASYNC_ACT, [path, data, err, ok]() { *ok = service_download(path, *data, *err); },
+        [name, ext, data, err, ok]() {
+            g_busy--; redraw();
+            if (!*ok) { error_open(*err); return; }
+            if (!audio_start(*data, ext, g_userId)) { text_open(tr("audioTitle", "Player"), tr("audioErr", "Cannot play this file"), true); return; }
+            g_au.name = name;
+            focus_push(F_AUDIO);
+        });
+}
+
+static void open_file(int pi, bool viaCross)
+{
+    Panel& p = g_panels[pi];
+    Entry2* e = panel_cur(p);
+    if (!e || e->name == ".." || e->isDir()) return;
+    std::string path = join_path(p.path, e->name), name = e->name, ext = ext_of(name);
+    if (viaCross && ext == "pkg" && e->type != 'o') { install_confirm({ path }, p.path); return; }
+    bool media = is_image_ext(ext) || is_audio_ext(ext);
+    if (media && e->type == 'f' && e->size > MEDIA_MAX) { text_open(name, tr("appTooBig", "File is too large for the app (limit 32 MB)"), true); return; }
+    if (is_image_ext(ext)) { img_open(pi); return; }
+    if (is_audio_ext(ext)) { audio_open(path, name, ext); return; }
+    if (is_video_ext(ext)) { text_open(name, tr("noVideo", "Video playback is not supported in the app. Open the web interface (port 8484) in a browser."), true); return; }
+    if (is_audio_unsupported(ext)) { text_open(name, tr("noFormat", "This audio format is not supported in the app (MP3, OGG, WAV only)."), true); return; }
+    view_text(path, name);
+}
+
+static void act_view()
+{
+    Panel& p = g_panels[g_active];
+    Entry2* e = panel_cur(p);
+    if (!e || e->name == ".." || e->isDir()) return;
+    open_file(g_active, false);
 }
 
 static void act_find()
@@ -941,20 +1061,34 @@ static void draw_bar()
     }
 }
 
-// Подсказки по кнопкам внизу: значки для кнопок с фигурами, L1/R1/L2/R2 - обычным текстом (значки обрезались).
+// Имя выбранного файла/папки над кнопками - как showName() в веб-версии: "/" у папок, " -> цель" у ссылок.
+static void draw_selname()
+{
+    Panel& p = g_panels[g_active];
+    Entry2* e = panel_cur(p);
+    if (!e) return;
+    std::string nm;
+    if (e->name == "..") nm = "..";
+    else nm = (e->isDir() ? "/" : "") + e->name + (e->type == 'l' && !e->link.empty() ? " -> " + e->link : "");
+    draw_text(fit(nm, (FRAME_WIDTH - 2 * MARGIN_X) / cell_w()), MARGIN_X, NAME_Y, T.dim, T.bg);
+}
+
+// Подсказки по кнопкам внизу - одна строка; L1/R1/L2/R2 - обычным текстом (значки обрезались).
 static void draw_hints_credit()
 {
-    std::string l1, l2;
-    if (g_focus == F_BAR) {
-        l1 = "L2/R2 " + tr("hint_pick", "choose") + "     {cross} " + tr("hint_do", "do") + "     {circle} " + tr("hint_back", "back");
-        l2 = "L1/R1 " + tr("hint_swap", "switch panel");
-    } else {
-        l1 = "{arrows} " + tr("hint_nav", "move") + "     {cross} " + tr("hint_enter", "open") + "     {circle} " + tr("hint_up", "up") +
-             "     {square} " + tr("hint_mark", "mark") + "     {triangle} " + tr("hint_ctx", "file menu");
-        l2 = "L1/R1 " + tr("hint_swap", "switch panel") + "     L2/R2 " + tr("hint_bar", "bottom bar") + "     {options} " + tr("menu", "Menu");
-    }
-    put_center_rich(FRAME_WIDTH / 2, l1, HINT1_Y, T.dim, T.bg);
-    put_center_rich(FRAME_WIDTH / 2, l2, HINT2_Y, T.dim, T.bg);
+    std::string sep = "     ", l;
+    auto build = [&](const std::string& s) {
+        if (g_focus == F_BAR)
+            return "L2/R2 " + tr("hint_pick", "choose") + s + "{cross} " + tr("hint_do", "do") + s + "{circle} " + tr("hint_back", "back") +
+                   s + "L1/R1 " + tr("hint_swap", "switch panel");
+        return "{arrows} " + tr("hint_nav", "move") + s + "{cross} " + tr("hint_enter", "open") + s + "{circle} " + tr("hint_up", "up") +
+               s + "{square} " + tr("hint_mark", "mark") + s + "{triangle} " + tr("hint_ctx", "file menu") +
+               s + "L1/R1 " + tr("hint_swap", "switch panel") + s + "L2/R2 " + tr("hint_bar", "bottom bar") + s + "{options} " + tr("menu", "Menu");
+    };
+    l = build(sep);
+    if (rich_width(l) > FRAME_WIDTH - 2 * MARGIN_X) l = build("   ");
+    if (rich_width(l) > FRAME_WIDTH - 2 * MARGIN_X) l = build("  ");
+    put_center_rich(FRAME_WIDTH / 2, l, HINT_Y, T.dim, T.bg);
     std::string credit = "ps4commander v" APP_VERSION " \xC2\xB7 Created by SergioPoverony and Mr.Claude";
     put_center(FRAME_WIDTH / 2, credit, CREDIT_Y, T.dimmer, T.bg);
 }
@@ -1109,6 +1243,49 @@ static void draw_pkgq()
     dlg_hint(x, y, w, h, "{cross} " + tr("cancel", "Cancel") + "          {circle} " + tr("close", "Close"));
 }
 
+static void draw_image()
+{
+    fill(0, 0, FRAME_WIDTH, FRAME_HEIGHT, Color{ 0, 0, 0 });
+    Color dim = Color{ 190, 190, 190 };
+    if (g_iv.ok && !g_iv.pic.px.empty())
+        gfx_blit((FRAME_WIDTH - g_iv.pic.w) / 2, (1000 - g_iv.pic.h) / 2, g_iv.pic.w, g_iv.pic.h, g_iv.pic.px.data());
+    else if (g_iv.loading) put_center(FRAME_WIDTH / 2, tr("loading", "Loading..."), 500, dim, Color{ 0, 0, 0 });
+    else put_center(FRAME_WIDTH / 2, tr("imgErr", "Cannot display this image"), 500, Color{ 255, 120, 120 }, Color{ 0, 0, 0 });
+    std::string cap = fit(g_iv.name, 90) + "   (" + std::to_string(g_iv.idx + 1) + "/" + std::to_string(g_iv.list.size()) + ")";
+    if (g_iv.ok) cap += "   " + std::to_string(g_iv.pic.w) + "x" + std::to_string(g_iv.pic.h);
+    put_center(FRAME_WIDTH / 2, cap, 1034, dim, Color{ 0, 0, 0 });
+    std::string h = "{circle} " + tr("close", "Close");
+    if (g_iv.list.size() > 1) h = "{arrows} " + tr("hint_imgnav", "previous / next") + "     " + h;
+    put_center_rich(FRAME_WIDTH / 2, h, 1066, dim, Color{ 0, 0, 0 });
+}
+
+static std::string fmt_time(double s)
+{
+    int t = (int)s;
+    char b[16];
+    snprintf(b, sizeof(b), "%d:%02d", t / 60, t % 60);
+    return b;
+}
+
+static void draw_audio()
+{
+    int w = 1000, h = 320;
+    int x, y; dlg_box(w, h, tr("audioTitle", "Player"), x, y);
+    draw_text(fit(g_au.name, (w - 80) / cell_w()), x + 40, y + 110, T.dlgFg, T.dlgBg);
+    int st = audio_state();
+    std::string s;
+    if (st == 4) s = tr("audioErr", "Cannot play this file");
+    else if (st == 3) s = tr("audioDone", "Finished");
+    else if (st == 1) s = tr("loading", "Loading...");
+    else s = audio_paused() ? tr("audioPaused", "Paused") : tr("audioPlaying", "Playing");
+    draw_text(s, x + 40, y + 154, st == 4 ? (T.modern ? T.warn : Color{ 150, 0, 0 }) : dlg_dim(), T.dlgBg);
+    double pos = audio_seconds(), tot = audio_total();
+    std::string tm = fmt_time(pos) + (tot > 0 ? " / " + fmt_time(tot) : "");
+    draw_text(tm, x + w - 40 - count_cp(tm) * cell_w(), y + 154, dlg_dim(), T.dlgBg);
+    draw_bar_progress(x + 40, y + 180, w - 80, tot > 0 ? pos / tot : (st == 3 ? 1.0 : 0.0));
+    dlg_hint(x, y, w, h, "{cross} " + tr("hint_pause", "pause / play") + "          {circle} " + tr("hint_stop", "stop"));
+}
+
 static void draw_donate()
 {
     int w = 700, h = 580;
@@ -1216,6 +1393,7 @@ static void draw_all()
     int halfW = (FRAME_WIDTH - 2 * MARGIN_X - 16) / 2;
     draw_panel_box(0, MARGIN_X, halfW);
     draw_panel_box(1, MARGIN_X + halfW + 16, halfW);
+    draw_selname();
     draw_bar();
     draw_hints_credit();
 
@@ -1227,6 +1405,8 @@ static void draw_all()
     case F_PROGRESS: draw_progress(); break;
     case F_PKGQ: draw_pkgq(); break;
     case F_DONATE: draw_donate(); break;
+    case F_IMAGE: draw_image(); break;
+    case F_AUDIO: draw_audio(); break;
     case F_PICK: draw_pick(); break;
     case F_SMBLIST: draw_smb_list(); break;
     case F_SMBEDIT: draw_smb_edit(); break;
@@ -1238,8 +1418,6 @@ static void draw_all()
 
 static int g_pad = -1;
 static bool g_imeReady = false;
-static int g_userId = 0;
-
 static bool pad_init()
 {
     if (scePadInit() != 0) return false;
@@ -1454,7 +1632,7 @@ void ui_pump()
     poll_progress(now);
     // индикатор загрузки и прогресс обновляем и без нажатий
     static uint64_t lastTick = 0;
-    if (now - lastTick >= 150000ULL && (g_busy > 0 || g_panels[0].loading || g_panels[1].loading || g_svc != S_READY)) { lastTick = now; redraw(); }
+    if (now - lastTick >= 150000ULL && (g_busy > 0 || g_panels[0].loading || g_panels[1].loading || g_svc != S_READY || g_focus == F_AUDIO || (g_focus == F_IMAGE && g_iv.loading))) { lastTick = now; redraw(); }
 
     if (g_svc != S_READY) {
         if (g_svc == S_FAILED) { if (cross) svc_begin(); else if (circle) exit(0); }
@@ -1471,6 +1649,17 @@ void ui_pump()
         break;
     case F_DONATE:
         if (circle || cross) focus_pop();
+        break;
+    case F_IMAGE: {
+        int n = (int)g_iv.list.size();
+        if (circle || triangle) { g_iv.req++; g_iv.pic = Picture(); focus_pop(); break; }
+        if ((right || r1 || r2 || cross) && g_iv.idx + 1 < n) img_load(g_iv.idx + 1);
+        else if ((left || l1 || l2) && g_iv.idx > 0) img_load(g_iv.idx - 1);
+        break;
+    }
+    case F_AUDIO:
+        if (cross) audio_pause_toggle();
+        else if (circle) { audio_stop(); focus_pop(); }
         break;
     case F_TEXT:
         if (circle || cross) { focus_pop(); break; }

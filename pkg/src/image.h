@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 
 // Простая обёртка над stb_image: декодирует PNG в RGBA8 (4 байта на пиксель).
 // Нужна для картинок интерфейса (например, title.png), не для фотографий —
@@ -13,4 +14,7 @@ struct Image {
     // Загружает PNG (или другой формат, который умеет stb_image) из файла.
     // true при успехе; при неудаче width/height остаются 0, причина пишется в лог.
     bool load(const char* path);
+
+    // Декодирует картинку из памяти (PNG/JPG/BMP/GIF/TGA/PSD...).
+    bool loadMem(const unsigned char* data, size_t size);
 };

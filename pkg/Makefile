@@ -14,7 +14,7 @@ export DOTNET_ROLL_FORWARD := LatestMajor
 TITLE       := PS4 Commander
 TITLE_ID    := BREW00090
 CONTENT_ID  := IV0000-BREW00090_00-PS4COMMANDER0000
-LIBS        := -lc -lkernel -lc++ -lSceNet -lSceVideoOut -lSceSysmodule -lSceFreeType -lScePad -lSceUserService -lSceSystemService -lSceImeDialog -lSceCommonDialog
+LIBS        := -lc -lkernel -lc++ -lSceNet -lSceVideoOut -lSceSysmodule -lSceFreeType -lScePad -lSceUserService -lSceSystemService -lSceImeDialog -lSceCommonDialog -lSceAudioOut
 EXTRAFLAGS  := -O2
 
 # Версия приложения = версия службы (из ../src/version.h): приложение сравнивает их при запуске

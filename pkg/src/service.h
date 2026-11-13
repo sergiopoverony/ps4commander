@@ -70,6 +70,9 @@ bool service_state_set_paths(const std::string& l, const std::string& r);   // �
 // Просмотр текстового файла (как /api/view, с ограничением длины - для экрана этого достаточно).
 bool service_view(const std::string& path, int64_t maxLen, std::string& data, std::string& err);
 
+// Целиком скачивает файл из службы (/api/download?inline=1) в память - для картинок и музыки (до 32 МБ).
+bool service_download(const std::string& path, std::string& data, std::string& err);
+
 // Отправляет ELF из PKG (/app0/assets/misc/ps4commander.elf) в BinLoader (127.0.0.1:9090).
 bool service_send_payload(std::string& err, bool* connectFailed = nullptr);
 

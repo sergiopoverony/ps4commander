@@ -34,6 +34,8 @@ std::vector<std::string> wrap_lines(const std::string& s, int maxc);   // пер
 // --- примитивы
 void fill(int x, int y, int w, int h, Color c);
 void fill_rounded(int x, int y, int w, int h, int r, Color c);
+// Выводит готовую картинку 0x00RRGGBB (w*h пикселей) в точку (x,y); за пределы экрана не выходит.
+void gfx_blit(int x, int y, int w, int h, const uint32_t* rgb);
 void draw_frame(int x, int y, int w, int h, int r, Color border, Color fillc);
 
 // --- текст

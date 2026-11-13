@@ -14,3 +14,9 @@ Used to show an SMB share as a folder on a USB drive, so the system installer ca
 ## DejaVu Sans Mono
 Bitmap/outline font used only by the gamepad PKG app (`pkg/assets/fonts/DejaVuSansMono.ttf`) to draw its own text on-screen; the web interface renders text with the browser's own fonts and does not use this file.
 License: public domain / Bitstream Vera Fonts License (see `pkg/assets/fonts/LICENSE-DejaVu.txt`).
+
+## minimp3
+MP3 decoder used only by the gamepad PKG app (`pkg/src/minimp3.h`) to play music. Public domain (CC0), https://github.com/lieff/minimp3
+
+## stb_image / stb_vorbis
+Image (PNG/JPG/BMP/GIF) and OGG Vorbis decoders from the OpenOrbis toolchain (`stb/`), used only by the gamepad PKG app. Public domain / MIT (Sean Barrett), https://github.com/nothings/stb

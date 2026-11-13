@@ -234,5 +234,17 @@
   "noQr": "QR code not found in the app",
   "appExit": "Exit",
   "helpPad": "D-pad Up/Down - move (hold to scroll fast)\nD-pad Left/Right - page up / down\nCross - open folder / confirm\nCircle - parent folder / back\nSquare - mark file (cursor moves down)\nTriangle - file menu (rename, select, properties, install .pkg)\nL1 / R1 - switch panel\nL2 / R2 - move along the bottom bar (1-10), Cross - run\nOptions - menu (theme, language, find, go to, network folders, log...)\n\nFull text editing, upload and download are in the web interface (port 8484).",
-  "e_noconn": "Service not responding"
+  "e_noconn": "Service not responding",
+  "hint_imgnav": "previous / next",
+  "imgErr": "Cannot display this image (PNG, JPG, BMP, GIF only)",
+  "noVideo": "Video playback is not supported in the app. Open the web interface (port 8484) in a browser.",
+  "noFormat": "This audio format is not supported in the app (MP3, OGG, WAV only).",
+  "audioTitle": "Player",
+  "audioPlaying": "Playing",
+  "audioPaused": "Paused",
+  "audioDone": "Finished",
+  "audioErr": "Cannot play this file",
+  "hint_pause": "pause / play",
+  "hint_stop": "stop",
+  "appTooBig": "File is too large for the app (limit 32 MB)"
 }
