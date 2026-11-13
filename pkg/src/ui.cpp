@@ -361,7 +361,8 @@ static void act_delete()
     if (names.empty()) return;
     for (auto& n : names) paths.push_back(join_path(p.path, n));
     std::string yes = tr("del", "Delete");
-    confirm_open(yes + " " + std::to_string(paths.size()) + " " + tr("items", "items") + "?", tr("delWarn", "This cannot be undone."), yes,
+    std::string what = paths.size() == 1 ? "\"" + base_of(paths[0]) + "\"" : std::to_string(paths.size()) + " " + tr("items", "items");
+    confirm_open(yes + " " + what + "?", tr("delWarn", "This cannot be undone."), yes,
                  [=]() { start_job("delete", paths, "", false, ""); });
 }
 
@@ -887,9 +888,10 @@ static void run_bar_action(int idx)
 }
 
 // Контекстное меню на файле (Треугольник): Rename / Select / Properties / Cancel (+ Install для .pkg).
-static const char* CTX_KEYS[5] = { "rename", "select", "infoTitle", "cancel", "install" };
-static const char* CTX_DEFS[5] = { "Rename", "Select", "Properties", "Cancel", "Install PKG" };
-static int ctx_count(bool pkg) { return pkg ? 5 : 4; }
+static const char* CTX_KEYS[6] = { "rename", "select", "infoTitle", "del", "install", "cancel" };
+static const char* CTX_DEFS[6] = { "Rename", "Select", "Properties", "Delete", "Install PKG", "Cancel" };
+static int ctx_count(bool pkg) { return pkg ? 6 : 5; }
+static int ctx_id(int i, bool pkg) { return (!pkg && i >= 4) ? 5 : i; }   // без .pkg пункт "Install" пропускается
 
 static void toggle_mark(Panel& p, bool advance)
 {
@@ -902,11 +904,14 @@ static void toggle_mark(Panel& p, bool advance)
 
 static void ctx_run(int idx)
 {
+    Entry2* ce = panel_cur(g_panels[g_active]);
+    idx = ctx_id(idx, ce && is_pkg(*ce));
     focus_pop();
     switch (idx) {
     case 0: act_rename(); break;
     case 1: toggle_mark(g_panels[g_active], false); break;
     case 2: act_props(); break;
+    case 3: act_delete(); break;
     case 4: act_install(); break;
     default: break;
     }
@@ -1133,7 +1138,7 @@ static void draw_ctxmenu()
         int ry = y + 76 + i * 48;
         bool hl = i == g_ctxCursor;
         draw_row_hl(x + 20, ry - 4, w - 40, 42, hl);
-        draw_text(tr(CTX_KEYS[i], CTX_DEFS[i]), x + 40, ry + 24, hl ? T.curFg : T.dlgFg, hl ? T.curBg : T.dlgBg);
+        draw_text(tr(CTX_KEYS[ctx_id(i, pkg)], CTX_DEFS[ctx_id(i, pkg)]), x + 40, ry + 24, hl ? T.curFg : T.dlgFg, hl ? T.curBg : T.dlgBg);
     }
 }
 
