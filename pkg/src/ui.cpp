@@ -279,6 +279,7 @@ static void pick_open(const std::string& title, const std::string& note, const s
 static JobView g_job;
 static PkgQueueView g_pkgq;
 static bool g_pollBusy = false;
+static std::vector<std::string> g_pkgActive;   // пути PKG, которые сейчас в очереди/устанавливаются
 static bool g_pkgBg = false;          // в службе идёт установка PKG (пункт "очередь установки" в меню Треугольника)
 static uint64_t g_pollAt = 0, g_progStart = 0;
 
@@ -457,12 +458,21 @@ static void pkgq_open()
     focus_push(F_PKGQ);
 }
 
+static bool pkg_is_active(const std::string& path) { return std::find(g_pkgActive.begin(), g_pkgActive.end(), path) != g_pkgActive.end(); }
+static void pkg_note_active(const PkgQueueView& q)
+{
+    g_pkgActive.clear();
+    for (auto& it : q.items) if (it.status == "queued" || it.status == "registering" || it.status == "installing") g_pkgActive.push_back(it.path);
+}
+
 static void install_confirm(const std::vector<std::string>& paths, const std::string& dir)
 {
+    // этот PKG уже ставится - вместо повторной установки показываем окно очереди с прогрессом
+    if (paths.size() == 1 && pkg_is_active(paths[0])) { pkgq_open(); return; }
     std::string nm = paths.size() == 1 ? "\"" + base_of(paths[0]) + "\"" : std::to_string(paths.size()) + " " + tr("items", "items");
     std::string body = dir.compare(0, 5, "/smb/") == 0 ? tr("installSmbNote", "") : "";
     confirm_open(tr_sub("installQ", "Install {n}?", { { "n", nm } }), body, tr("install", "Install PKG"),
-                 [paths]() { act_async([paths](std::string& err) { return service_pkg_install(paths, err); }, []() { pkgq_open(); }); });
+                 [paths]() { act_async([paths](std::string& err) { return service_pkg_install(paths, err); }, [paths]() { for (auto& p : paths) g_pkgActive.push_back(p); pkgq_open(); }); });
 }
 
 static void act_install()
@@ -1604,7 +1614,7 @@ static void poll_progress(uint64_t now)
         g_pollBusy = true;
         auto q = std::make_shared<PkgQueueView>();
         async_run(ASYNC_POLL, [q]() { service_pkg_state(*q); },
-            [q]() { g_pollBusy = false; if (q->active != g_pkgBg) { g_pkgBg = q->active; redraw(); } });
+            [q]() { g_pollBusy = false; pkg_note_active(*q); if (q->active != g_pkgBg) { g_pkgBg = q->active; redraw(); } });
         return;
     }
     if (g_pollBusy || now < g_pollAt) return;
@@ -1628,6 +1638,7 @@ static void poll_progress(uint64_t now)
             } else if (!job && g_focus == F_PKGQ) {
                 g_pkgq = *qv;
                 g_pkgBg = qv->active;
+                pkg_note_active(*qv);
             }
         });
 }
