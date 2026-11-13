@@ -47,8 +47,8 @@ static const int ROW_H     = 28;
 static const int NAME_Y    = PANEL_TOP + PANEL_H + 28;    // строка с именем выбранного файла/папки (как #msg в вебе)
 static const int BAR_TOP   = PANEL_TOP + PANEL_H + 42;
 static const int BAR_H     = 42;
-static const int HINT_Y    = BAR_TOP + BAR_H + 42;        // подсказка по кнопкам - одной строкой
-static const int CREDIT_Y  = 1052;                        // версия и авторы - у нижнего края экрана
+static const int HINT_Y    = 1038;        // подсказка по кнопкам - одной строкой
+static const int CREDIT_Y  = 1068;                        // версия и авторы - у нижнего края экрана
 
 static int g_redraw = 2;                  // сколько кадров ещё рисовать (2 - оба буфера экрана)
 static bool g_ready = false;
@@ -954,7 +954,10 @@ static void draw_panel_box(int idx, int x, int w)
     // заголовок: путь (активная панель подсвечена)
     Color hb = act ? T.curBg : (T.modern ? T.surface2 : T.panel);
     Color hf = act ? T.curFg : (T.modern ? T.dim : T.border);
-    fill(x, PANEL_TOP, w, HEAD_H, hb);
+    if (T.modern) {   // шапка повторяет скругление верхних углов панели
+        fill_rounded(x + 1, PANEL_TOP + 1, w - 2, HEAD_H, 17, hb);
+        fill(x + 1, PANEL_TOP + HEAD_H / 2, w - 2, HEAD_H / 2, hb);
+    } else fill(x, PANEL_TOP, w, HEAD_H, hb);
     std::string title = p.path;
     if (p.loading) title += "   " + tr("loading", "Loading...");
     else if (!p.err.empty()) title += "   [" + tr_err(p.err) + "]";
@@ -1031,8 +1034,9 @@ static void draw_topbar()
 {
     draw_text("PS4 Commander", MARGIN_X, TOP_BASE, T.dir, T.bg);
     int x = MARGIN_X + 14 * cell_w() + 14;
-    draw_text(APP_VERSION, x, TOP_BASE, T.border, T.bg);
-    x += (int)strlen(APP_VERSION) * cell_w() + 24;
+    std::string addr = "http://" + (service_ip().empty() ? std::string("<IP>") : service_ip()) + ":" + std::to_string(SERVICE_PORT);
+    draw_text(addr, x, TOP_BASE, T.modern ? T.text : T.border, T.bg);
+    x += count_cp(addr) * cell_w() + 24;
     fill_rounded(x, TOP_BASE - 14, 12, 12, 6, g_svc == S_READY ? T.ok : T.warn);
     x += 28;
     if (g_unsafe) draw_text(tr("unsafeOn", "SYSTEM AREAS UNLOCKED"), x, TOP_BASE, T.warn, T.bg);
@@ -1231,8 +1235,8 @@ static std::string pkg_status_text(const std::string& st)
 
 static void draw_pkgq()
 {
-    int w = 1300, rowH = 54;
-    int n = std::min((int)g_pkgq.items.size(), 8);
+    int w = 1300, rowH = 78;
+    int n = std::min((int)g_pkgq.items.size(), 6);
     int h = 190 + std::max(1, n) * rowH;
     int x, y; dlg_box(w, h, tr("pkgTitle", "Package installation"), x, y);
     if (g_pkgq.items.empty()) draw_text(tr("loading", "Loading..."), x + 40, y + 110, dlg_dim(), T.dlgBg);
@@ -1240,10 +1244,13 @@ static void draw_pkgq()
     for (int r = 0; r < n; r++) {
         const PkgItemView& it = g_pkgq.items[start + r];
         int ry = y + 96 + r * rowH;
-        int pc = it.total > 0 ? (int)(100.0 * it.done / it.total) : 0;
-        std::string line = it.name + "   " + pkg_status_text(it.status) + (pc > 0 && it.status == "installing" ? "  " + std::to_string(pc) + "%" : "");
+        bool full = it.status == "done" || it.status == "already_installed";
+        double frac = full ? 1.0 : (it.status == "installing" && it.total > 0 ? (double)it.done / (double)it.total : 0.0);
+        std::string line = it.name + "   " + pkg_status_text(it.status) + (it.status == "installing" && it.total > 0 ? "  " + std::to_string((int)(frac * 100)) + "%" : "");
         draw_text(fit(line, (w - 80) / cell_w()), x + 40, ry + 20, T.dlgFg, T.dlgBg);
-        if (!it.msg.empty()) draw_text(fit(it.msg, (w - 80) / cell_w()), x + 40, ry + 44, dlg_dim(), T.dlgBg);
+        draw_bar_progress(x + 40, ry + 30, w - 80, frac);
+        if (it.status == "installing" && it.total > 0) draw_text(fmt_size(it.done) + " / " + fmt_size(it.total), x + 40, ry + 72, dlg_dim(), T.dlgBg);
+        else if (!it.msg.empty()) draw_text(fit(it.msg, (w - 80) / cell_w()), x + 40, ry + 72, dlg_dim(), T.dlgBg);
     }
     dlg_hint(x, y, w, h, "{cross} " + tr("cancel", "Cancel") + "          {circle} " + tr("close", "Close"));
 }

@@ -485,7 +485,7 @@ static void handle(int fd) {
             if (la) respond(fd, 200, "application/json; charset=utf-8", (const char*)la->data, la->len);
             else respond_err(fd, 404, "not_found");
         }
-        else if (path == "/api/roots") respond_json(fd, 200, "{\"roots\":" + fs_roots_json() + ",\"version\":\"" APP_VERSION "\"}");
+        else if (path == "/api/roots") respond_json(fd, 200, "{\"roots\":" + fs_roots_json() + ",\"version\":\"" APP_VERSION "\",\"ip\":\"" + json_esc(local_ip()) + "\"}");
         else if (path == "/api/ls") {
             std::string n = path_param(query, err);
             if (n.empty()) { respond_err(fd, 400, err); }

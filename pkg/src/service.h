@@ -36,6 +36,8 @@ void service_set_unsafe(bool on);
 
 // /api/roots - список точек монтирования для быстрого перехода; version - версия службы.
 struct RootView { std::string path; bool mnt = false, smb = false; };
+// IP консоли (из ответа /api/roots), пусто - не определён.
+const std::string& service_ip();
 bool service_roots(std::vector<RootView>& out, std::string& version);
 
 // Задания копирования/переноса/удаления/chmod/mkdir (см. src/jobs.cpp и src/http.cpp службы).

@@ -89,6 +89,9 @@ bool service_ls(const std::string& path, LsView& out)
     return true;
 }
 
+static std::string g_ip;
+const std::string& service_ip() { return g_ip; }
+
 bool service_roots(std::vector<RootView>& out, std::string& version)
 {
     out.clear();
@@ -97,6 +100,7 @@ bool service_roots(std::vector<RootView>& out, std::string& version)
     JsonValue j;
     if (!json_parse(r.body, j) || j.type != JsonValue::OBJ) return false;
     version = j["version"].asStr();
+    g_ip = j["ip"].asStr();
     const JsonValue& arr = j["roots"];
     for (size_t i = 0; i < arr.arr.size(); i++) {
         const JsonValue& e = arr.arr[i];
