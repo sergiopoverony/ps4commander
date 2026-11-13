@@ -39,13 +39,13 @@ extern "C" int sceSystemServiceHideSplashScreen(void);
 static const int MARGIN_X  = 36;
 static const int TOP_BASE  = 38;          // базовая линия верхней строки
 static const int PANEL_TOP = 56;
-static const int PANEL_H   = 830;
+static const int PANEL_H   = 866;
 static const int HEAD_H    = 34;          // заголовок панели (путь)
 static const int COLH_H    = 28;          // шапка столбцов (Name/Size/Date/Attr)
 static const int FOOT_H    = 34;          // подвал панели (сведения/свободное место)
 static const int ROW_H     = 28;
-static const int NAME_Y    = PANEL_TOP + PANEL_H + 28;    // строка с именем выбранного файла/папки (как #msg в вебе)
-static const int BAR_TOP   = PANEL_TOP + PANEL_H + 42;
+static const int NAME_Y    = PANEL_TOP + PANEL_H + 26;    // строка с именем выбранного файла/папки (как #msg в вебе)
+static const int BAR_TOP   = PANEL_TOP + PANEL_H + 50;
 static const int BAR_H     = 42;
 static const int HINT_Y    = 1038;        // подсказка по кнопкам - одной строкой
 static const int CREDIT_Y  = 1068;                        // версия и авторы - у нижнего края экрана
@@ -279,6 +279,7 @@ static void pick_open(const std::string& title, const std::string& note, const s
 static JobView g_job;
 static PkgQueueView g_pkgq;
 static bool g_pollBusy = false;
+static bool g_pkgBg = false;          // в службе идёт установка PKG (пункт "очередь установки" в меню Треугольника)
 static uint64_t g_pollAt = 0, g_progStart = 0;
 
 static Image g_qrSbp, g_qrPaypal;
@@ -451,6 +452,7 @@ static void act_props()
 static void pkgq_open()
 {
     g_pkgq = PkgQueueView();
+    g_pkgBg = true;
     g_pollAt = 0;
     focus_push(F_PKGQ);
 }
@@ -888,10 +890,19 @@ static void run_bar_action(int idx)
 }
 
 // Контекстное меню на файле (Треугольник): Rename / Select / Properties / Cancel (+ Install для .pkg).
-static const char* CTX_KEYS[6] = { "rename", "select", "infoTitle", "del", "install", "cancel" };
-static const char* CTX_DEFS[6] = { "Rename", "Select", "Properties", "Delete", "Install PKG", "Cancel" };
-static int ctx_count(bool pkg) { return pkg ? 6 : 5; }
-static int ctx_id(int i, bool pkg) { return (!pkg && i >= 4) ? 5 : i; }   // без .pkg пункт "Install" пропускается
+static const char* CTX_KEYS[7] = { "rename", "select", "infoTitle", "del", "install", "cancel", "pkgTitle" };
+static const char* CTX_DEFS[7] = { "Rename", "Select", "Properties", "Delete", "Install PKG", "Cancel", "Package installation" };
+// Пункты: "Install" - только на .pkg; "очередь установки" - только пока что-то устанавливается.
+static int ctx_count(bool pkg) { return 5 + (pkg ? 1 : 0) + (g_pkgBg ? 1 : 0); }
+static int ctx_id(int i, bool pkg)
+{
+    int ids[7], n = 0;
+    ids[n++] = 0; ids[n++] = 1; ids[n++] = 2; ids[n++] = 3;
+    if (pkg) ids[n++] = 4;
+    if (g_pkgBg) ids[n++] = 6;
+    ids[n++] = 5;
+    return (i >= 0 && i < n) ? ids[i] : 5;
+}
 
 static void toggle_mark(Panel& p, bool advance)
 {
@@ -913,6 +924,7 @@ static void ctx_run(int idx)
     case 2: act_props(); break;
     case 3: act_delete(); break;
     case 4: act_install(); break;
+    case 6: pkgq_open(); break;
     default: break;
     }
 }
@@ -1206,7 +1218,7 @@ static void draw_pick()
 static void draw_bar_progress(int x, int y, int w, double frac)
 {
     int bh = 22;
-    fill_rounded(x, y, w, bh, T.modern ? 10 : 0, T.modern ? T.surface2 : T.panel);
+    fill_rounded(x, y, w, bh, T.modern ? 10 : 0, T.modern ? T.border : T.panel);   // дорожка заметно темнее/светлее фона окна
     if (frac > 0) fill_rounded(x, y, std::max(4, (int)(w * std::min(1.0, frac))), bh, T.modern ? 10 : 0, T.modern ? T.accent : T.curBg);
 }
 
@@ -1584,7 +1596,18 @@ static int wrap_idx(int v, int n) { return n <= 0 ? 0 : ((v % n) + n) % n; }
 static void poll_progress(uint64_t now)
 {
     bool job = g_focus == F_PROGRESS, pkg = g_focus == F_PKGQ;
-    if ((!job && !pkg) || g_pollBusy || now < g_pollAt) return;
+    if (!job && !pkg) {
+        // в фоне раз в 3 секунды узнаём, идёт ли установка PKG (в т.ч. запущенная из веб-версии)
+        static uint64_t nextBg = 0;
+        if (g_svc != S_READY || g_pollBusy || now < nextBg || (g_focus != F_PANEL && g_focus != F_CTX && g_focus != F_BAR)) return;
+        nextBg = now + 3000000ULL;
+        g_pollBusy = true;
+        auto q = std::make_shared<PkgQueueView>();
+        async_run(ASYNC_POLL, [q]() { service_pkg_state(*q); },
+            [q]() { g_pollBusy = false; if (q->active != g_pkgBg) { g_pkgBg = q->active; redraw(); } });
+        return;
+    }
+    if (g_pollBusy || now < g_pollAt) return;
     g_pollBusy = true;
     g_pollAt = now + 300000ULL;
     auto jv = std::make_shared<JobView>();
@@ -1604,6 +1627,7 @@ static void poll_progress(uint64_t now)
                 }
             } else if (!job && g_focus == F_PKGQ) {
                 g_pkgq = *qv;
+                g_pkgBg = qv->active;
             }
         });
 }
