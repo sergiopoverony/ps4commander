@@ -284,6 +284,8 @@ int32_t cb_read(void* p, uint8_t* buf, uint64_t pos, uint32_t len)
         c->state = 0;
     }
     scePthreadMutexUnlock(&c->mu);
+    static std::atomic<int> readLogs{ 0 };
+    if (ret >= 0 && readLogs++ < 30) logf_("video: read miss pos=%llu len=%u -> %d", (unsigned long long)pos, len, (int)ret);
     if (ret < 0 && failLogs++ < 5) logf_("video: read failed at %llu len %u", (unsigned long long)pos, len);
     return ret;
 }
@@ -428,6 +430,7 @@ bool g_vthValid = false;
 std::atomic<int> g_vstop{ 0 };
 
 alignas(256) int16_t g_aout[1024 * 2];
+int g_aoPort = -1;                 // звуковой порт открывается один раз и живёт до выхода: закрытие у системы не освобождало слот (после 8 видео порты кончались, 0x80260005)
 
 void sleep_ms(int ms) { sceKernelUsleep((unsigned)ms * 1000u); }
 
@@ -491,7 +494,7 @@ void* video_main_inner(Session* S)
     init.event = { S, (void*)cb_event };
     init.debugLevel = 0;
     init.basePriority = 700;
-    init.numFrameBuffers = 3;
+    init.numFrameBuffers = 6;     // потоки с большим числом опорных кадров/B-кадров (например 4 ref) при 3 буферах не выдают ни одного кадра
     init.autoStart = false;       // с автостартом плеер переходит в Play до того, как мы включим потоки, и тогда EnableStream отказывает (0x806A0002)
     init.defaultLanguage = "eng";
     void* h = g_api.init(&init);
@@ -567,7 +570,8 @@ void* video_main_inner(Session* S)
     int ao = -1;
     std::vector<int16_t> q;     // накопленные стереокадры 48 кГц
     size_t qpos = 0;
-    uint64_t idleSince = 0, jumpAt = 0;
+    uint64_t idleSince = 0, jumpAt = 0, aoRetryAt = 0;
+    int aoFails = 0;
     int ticks = 0;
     while (!S->stop) {
         // пауза и перемотка выполняются здесь, а не в потоке интерфейса: вызовы плеера могут задерживаться
@@ -617,10 +621,13 @@ void* video_main_inner(Session* S)
             }
         }
         if (aEn) {
-            if (ao < 0) {
+            if (ao < 0 && g_aoPort >= 0) ao = g_aoPort;
+            if (ao < 0 && sceKernelGetProcessTime() >= aoRetryAt) {
                 sceAudioOutInit();
                 ao = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
-                logf_("video: sceAudioOutOpen = 0x%08X", (unsigned)ao);
+                if (aoFails++ < 3 || ao >= 0) logf_("video: sceAudioOutOpen = 0x%08X", (unsigned)ao);
+                if (ao >= 0) g_aoPort = ao;
+                else aoRetryAt = sceKernelGetProcessTime() + 2000000ULL;
             }
             if (ao >= 0) {
                 if ((q.size() - qpos) / 2 >= 1024) {
@@ -648,7 +655,6 @@ void* video_main_inner(Session* S)
     g_vthValid = false;
     S->player = nullptr;
     g_api.stop(h);
-    if (ao >= 0) sceAudioOutClose(ao);
     g_api.close(h);
     sleep_ms(300);                         // дать внутренним потокам библиотеки завершиться
     return NULL;
@@ -748,7 +754,7 @@ void* vdec_main(void* arg)
     std::vector<uint32_t> out;
     std::vector<int> xs;
     std::vector<uint8_t> frameCopy;
-    bool logged = false;
+    bool logged = false, noFrameLogged = false;
     int frames = 0;
     uint64_t t0 = sceKernelGetProcessTime(), convUs = 0;
     while (!g_vstop && !S->stop) {
@@ -757,7 +763,13 @@ void* vdec_main(void* arg)
         alignas(16) unsigned char raw[sizeof(AvFrameEx) + 256];
         memset(raw, 0, sizeof(raw));
         AvFrameEx* f = (AvFrameEx*)raw;
-        if (!g_api.getVideoEx(p, f) || !f->data) { sleep_ms(3); continue; }
+        if (!g_api.getVideoEx(p, f) || !f->data) {
+            if (!logged && !noFrameLogged && sceKernelGetProcessTime() - t0 > 6000000ULL) {
+                noFrameLogged = true;
+                logf_("video: no video frame after 6 s (active=%d, time=%llu ms)", (int)g_api.isActive(p), (unsigned long long)g_api.curTime(p));
+            }
+            sleep_ms(3); continue;
+        }
 
         uint32_t W = f->video.width, H = f->video.height, pitch = f->video.pitch;
         if (!logged) {
