@@ -834,23 +834,39 @@ void* sw_main(void* arg)
     }
     std::vector<uint32_t> out;
     std::vector<int> xs;
-    int frames = 0, dropped = 0;
-    uint64_t t0 = sceKernelGetProcessTime(), convUs = 0, decUs = 0;
+    int frames = 0, dropped = 0, decoded = 0;
+    uint64_t t0 = sceKernelGetProcessTime(), convUs = 0, decUs = 0, lastShow = 0, lastResync = 0;
+    long long maxLag = 0;
     bool firstLogged = false;
     while (!g_vstop && !S->stop) {
+        uint64_t now0 = sceKernelGetProcessTime();
+        if (now0 - t0 >= 5000000ULL) {                    // статистика печатается всегда, даже если все кадры опоздали
+            logf_("video(sw): decoded %d, shown %d, skipped %d in %.1f s; decode %.1f ms/frame, convert %.1f ms, max lag %lld ms", decoded, frames, dropped,
+                  (now0 - t0) / 1e6, decoded ? decUs / 1000.0 / decoded : 0.0, frames ? convUs / 1000.0 / frames : 0.0, maxLag);
+            frames = 0; dropped = 0; decoded = 0; convUs = 0; decUs = 0; maxLag = 0; t0 = now0;
+        }
         long long sk = S->swSeekMs.exchange(-1);
-        if (sk >= 0) sw_seek(v, sk);
+        if (sk >= 0) { sw_seek(v, sk); lastResync = now0; }
         SwFrame f;
         uint64_t d0 = sceKernelGetProcessTime();
         if (!sw_next(v, f)) { sleep_ms(20); continue; }       // файл закончился - ждём перемотку или остановку
         decUs += sceKernelGetProcessTime() - d0;
+        decoded++;
         void* p = S->player;
         if (!p) break;
-        if (!firstLogged) { firstLogged = true; logf_("video: software frame %dx%d pts=%lld ms, audio clock=%lld ms", f.w, f.h, f.ptsMs, S->clock_ms()); }
         long long ct = S->clock_ms();
-        if (ct > f.ptsMs + 300) { dropped++; continue; }                      // опоздали - только декодируем, не показываем
+        if (!firstLogged) { firstLogged = true; logf_("video: software frame %dx%d pts=%lld ms, audio clock=%lld ms", f.w, f.h, f.ptsMs, ct); }
+        long long lag = ct - f.ptsMs;
+        if (lag > maxLag) maxLag = lag;
+        // Декодер медленнее показа: картинка не должна пропадать совсем. Опоздавшие кадры показываем не чаще раза в 200 мс,
+        // а если отставание больше 8 с - переходим к ключевому кадру у текущей позиции звука.
+        if (lag > 8000 && now0 - lastResync > 10000000ULL) { sw_seek(v, ct + 200); lastResync = now0; dropped++; continue; }
+        if (lag > 300) {
+            uint64_t nw = sceKernelGetProcessTime();
+            if (nw - lastShow < 200000ULL) { dropped++; continue; }
+        }
         bool seekPending = false;
-        while (ct + 20 < f.ptsMs && !g_vstop && !S->stop) {                // рано - ждём часы плеера (на паузе они стоят)
+        while (ct + 20 < f.ptsMs && !g_vstop && !S->stop) {                // рано - ждём часы (на паузе они стоят)
             if (S->swSeekMs.load() >= 0) { seekPending = true; break; }
             sleep_ms(4); ct = S->clock_ms();
         }
@@ -858,19 +874,14 @@ void* sw_main(void* arg)
         uint64_t c0 = sceKernelGetProcessTime();
         int dw, dh;
         i420_to_rgb(f, out, xs, dw, dh);
-        convUs += sceKernelGetProcessTime() - c0;
+        lastShow = sceKernelGetProcessTime();
+        convUs += lastShow - c0;
         scePthreadMutexLock(&g_picMu);
         g_back.px.swap(out);
         g_back.w = dw; g_back.h = dh;
         g_newFrame = 1;
         scePthreadMutexUnlock(&g_picMu);
         frames++;
-        uint64_t now = sceKernelGetProcessTime();
-        if (now - t0 >= 5000000ULL) {
-            logf_("video(sw): %d frames in %.1f s (dropped %d), decode %.1f ms, convert %.1f ms", frames, (now - t0) / 1e6, dropped,
-                  (frames + dropped) ? decUs / 1000.0 / (frames + dropped) : 0.0, frames ? convUs / 1000.0 / frames : 0.0);
-            frames = 0; dropped = 0; convUs = 0; decUs = 0; t0 = now;
-        }
     }
     sw_close(v);
     return NULL;
