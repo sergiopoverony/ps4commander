@@ -297,7 +297,8 @@ static uint32_t be32(const unsigned char* p) { return ((uint32_t)p[0] << 24) | (
 
 struct Mp4Track { std::string handler, fourcc; int profile = 0, level = 0, width = 0, height = 0; };
 
-static long long g_mvhdMs = 0;     // длительность из заголовка mvhd (плеер консоли для части файлов отдаёт 0)
+static long long g_mvhdMs = 0, g_mvhdTs = 0;
+static uint64_t g_mehdUnits = 0;
 
 static void mp4_parse(const unsigned char* d, size_t n, std::vector<Mp4Track>& out, Mp4Track* cur, int depth)
 {
@@ -315,13 +316,17 @@ static void mp4_parse(const unsigned char* d, size_t n, std::vector<Mp4Track>& o
             Mp4Track tr;
             mp4_parse(b, bl, out, &tr, depth + 1);
             out.push_back(tr);
-        } else if ((!memcmp(t, "moov", 4) || !memcmp(t, "mdia", 4) || !memcmp(t, "minf", 4) || !memcmp(t, "stbl", 4)) && depth < 8) {
+        } else if ((!memcmp(t, "moov", 4) || !memcmp(t, "mvex", 4) || !memcmp(t, "mdia", 4) || !memcmp(t, "minf", 4) || !memcmp(t, "stbl", 4)) && depth < 8) {
             mp4_parse(b, bl, out, cur, depth + 1);
         } else if (!memcmp(t, "mvhd", 4) && bl >= 32) {
             uint64_t ts, du;
             if (b[0] == 1) { ts = be32(b + 20); du = ((uint64_t)be32(b + 24) << 32) | be32(b + 28); }
             else { ts = be32(b + 12); du = be32(b + 16); }
+            g_mvhdTs = (long long)ts;
             if (ts) g_mvhdMs = (long long)(du * 1000ULL / ts);
+        } else if (!memcmp(t, "mehd", 4) && bl >= 8) {                 // фрагментированный MP4: полная длительность лежит здесь
+            uint64_t du = b[0] == 1 && bl >= 12 ? (((uint64_t)be32(b + 4) << 32) | be32(b + 8)) : be32(b + 4);
+            g_mehdUnits = du;
         } else if (cur && !memcmp(t, "hdlr", 4) && bl >= 12) {
             cur->handler.assign((const char*)b + 8, 4);
         } else if (cur && !memcmp(t, "stsd", 4) && bl >= 16 + 86) {
@@ -489,8 +494,24 @@ void* video_main_inner(Session* S)
         scePthreadAttrDestroy(&ra);
     }
     logf_("video: file '%s' size %llu", S->path.c_str(), total);
-    g_mvhdMs = 0;
+    g_mvhdMs = 0; g_mvhdTs = 0; g_mehdUnits = 0;
+    {   // список коробок верхнего уровня - для диагностики (moov в конце? фрагменты moof?)
+        unsigned long long bp = 0; unsigned char bh[16]; std::string bl;
+        for (int k = 0; k < 10 && bp < total; k++) {
+            if (service_read_range(S->path, bp, 16, bh, NULL) < 8) break;
+            uint64_t bs = be32(bh);
+            if (bs == 1) bs = ((uint64_t)be32(bh + 8) << 32) | be32(bh + 12);
+            if (bs == 0) bs = total - bp;
+            char one[48]; snprintf(one, sizeof(one), " %.4s@%llu(%llu)", (const char*)bh + 4, bp, (unsigned long long)bs);
+            bl += one;
+            if (bs < 8) break;
+            bp += bs;
+        }
+        logf_("video: mp4 boxes:%s", bl.c_str());
+    }
     std::string vinfo = mp4_video_info(S->path, &S->note);
+    if (g_mvhdMs <= 0 && g_mehdUnits > 0 && g_mvhdTs > 0) g_mvhdMs = (long long)(g_mehdUnits * 1000ULL / (uint64_t)g_mvhdTs);
+    logf_("video: mvhd timescale=%lld duration=%lld ms, mehd=%llu", g_mvhdTs, g_mvhdMs, (unsigned long long)g_mehdUnits);
     if (g_mvhdMs > 0) { S->durMs = g_mvhdMs; logf_("video: mp4 duration %lld ms", g_mvhdMs); }
     logf_("video: mp4 video track: %s", vinfo.empty() ? "none / not parsed" : vinfo.c_str());
     if (S->stop) return NULL;
