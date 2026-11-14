@@ -707,8 +707,7 @@ void* video_main_inner(Session* S)
                 }
             }
         }
-        if (aEn && S->hasVideo && !S->gotPicture) { q.clear(); qpos = 0; sleep_ms(5); }   // картинки ещё нет - звук не запускаем
-        else if (aEn) {
+        if (aEn) {
             if (ao < 0 && sceKernelGetProcessTime() >= aoRetryAt) {
                 ao = audio_shared_port();
                 if (aoFails++ < 3 || ao >= 0) logf_("video: audio port = 0x%08X", (unsigned)ao);
@@ -716,7 +715,8 @@ void* video_main_inner(Session* S)
             }
             if (ao >= 0) {
                 if ((q.size() - qpos) / 2 >= 1024) {
-                    memcpy(g_aout, q.data() + qpos, sizeof(g_aout));
+                    if (S->hasVideo && !S->gotPicture) memset(g_aout, 0, sizeof(g_aout));   // картинки ещё нет: тишина (но темп часов плеера сохраняем)
+                    else memcpy(g_aout, q.data() + qpos, sizeof(g_aout));
                     qpos += 2048;
                 } else if (!got) {
                     memset(g_aout, 0, sizeof(g_aout));
