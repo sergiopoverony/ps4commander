@@ -273,7 +273,7 @@ try:
     check('state: путь нормализуется', j['l'] == ROOT + '/src', j)
     # языковые файлы
     st, idx = get('/lang/index.json')
-    check('lang: список языков (en первым)', st == 200 and [x['code'] for x in idx][:2] == ['en', 'ru'] and idx[1]['name'] == 'Русский', idx)
+    check('lang: список языков (en первым)', st == 200 and [x['code'] for x in idx][0] == 'en' and any(x['code'] == 'ru' and x['name'] == 'Русский' for x in idx), idx)
     dicts = {}
     for x in idx:
         st, d = get('/lang/%s.json' % x['code'])

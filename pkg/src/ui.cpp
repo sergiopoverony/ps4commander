@@ -869,9 +869,9 @@ static void cycle_theme(int dir)
     redraw();
 }
 
-static void cycle_lang()
+static void cycle_lang(int dir = 1)
 {
-    i18n_set(i18n_current() == "ru" ? "en" : "ru");
+    i18n_cycle(dir);
     redraw();
 }
 
@@ -1191,7 +1191,7 @@ static void draw_menu()
         Color fg = hl ? T.curFg : T.dlgFg, bg = hl ? T.curBg : T.dlgBg;
         std::string s = tr(it.key, it.def);
         if (it.id == M_THEME) s += ":   < " + theme_name(gfx_theme()) + " >";
-        else if (it.id == M_LANG) s += ":   < " + std::string(i18n_current() == "ru" ? "Russian" : "English") + " >";
+        else if (it.id == M_LANG) s += ":   < " + i18n_name() + " >";
         else if (it.id == M_UNSAFE) s = std::string(g_unsafe ? "[x] " : "[ ] ") + s;
         else if (it.id == M_EXIT) fg = hl ? T.curFg : (T.modern ? T.warn : Color{ 150, 0, 0 });
         draw_text(s, x + 40, ry + 24, fg, bg);
@@ -1851,7 +1851,7 @@ void ui_pump()
         if (up) g_menuCursor = wrap_idx(g_menuCursor - 1, M_COUNT);
         if (down) g_menuCursor = wrap_idx(g_menuCursor + 1, M_COUNT);
         if ((left || right) && (g_menuCursor == M_THEME)) cycle_theme(right ? 1 : -1);
-        else if ((left || right) && g_menuCursor == M_LANG) cycle_lang();
+        else if ((left || right) && g_menuCursor == M_LANG) cycle_lang(right ? 1 : -1);
         if (cross) menu_run(MENU[g_menuCursor].id);
         else if (circle || options) focus_pop();
         break;

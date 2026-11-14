@@ -21,9 +21,10 @@ EXTRAFLAGS  := -O2
 # (см. /api/roots.version) и, если они разные, переотправляет ELF через BinLoader.
 APPVER      := $(shell sed -n 's/.*APP_VERSION "\(.*\)".*/\1/p' ../src/version.h)
 
+LANG_ASSETS := $(patsubst ../lang/%.json,assets/misc/lang_%.json,$(wildcard ../lang/*.json))
 ASSETS      := assets/fonts/DejaVuSansMono.ttf assets/fonts/LICENSE-DejaVu.txt \
                assets/images/qr_sbp.png assets/images/qr_paypal.png \
-               assets/misc/lang_en.json assets/misc/lang_ru.json assets/misc/ps4commander.elf
+               $(LANG_ASSETS) assets/misc/ps4commander.elf
 
 # Системные модули для приложения (без libc.prx приложение сразу вылетает). Берутся из набора OpenOrbis.
 LIBMODULES  := sce_module/libc.prx sce_module/libSceFios2.prx
@@ -79,10 +80,8 @@ sce_module/%.prx:
 assets/misc/ps4commander.elf: ../release/ps4commander.elf
 	cp $< $@
 
-# Переводы - те же файлы, что и у веб-страницы (lang/en.json, lang/ru.json из корня проекта).
-assets/misc/lang_en.json: ../lang/en.json
-	cp $< $@
-assets/misc/lang_ru.json: ../lang/ru.json
+# Переводы - те же файлы, что и у веб-страницы (все lang/<код>.json из корня проекта).
+assets/misc/lang_%.json: ../lang/%.json
 	cp $< $@
 
 # Иконка и фон запуска - из корневого sce_sys (имя Icon0.png там с заглавной буквы, PS4 ждёт icon0.png).
@@ -117,7 +116,7 @@ $(INTDIR)/%.o: $(PROJDIR)/%.cpp
 
 
 clean:
-	rm -rf $(CONTENT_ID).pkg pkg.gp4 eboot.bin build sce_sys sce_module assets/misc/ps4commander.elf assets/misc/lang_en.json assets/misc/lang_ru.json
+	rm -rf $(CONTENT_ID).pkg pkg.gp4 eboot.bin build sce_sys sce_module assets/misc/ps4commander.elf $(LANG_ASSETS)
 
 # Пересобирает службу в корне проекта (нужен PS4_PAYLOAD_SDK), обновляет её копию в
 # ../release/ps4commander.elf, затем чисто пересобирает сам PKG. Используйте вместо простого

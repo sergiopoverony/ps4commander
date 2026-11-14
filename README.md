@@ -16,7 +16,7 @@ Russian version: [docs/README_ru.md](docs/README_ru.md)
 - Recursive file search with masks.
 - Install `.pkg` files via the system installer (BGFT), with a queue and progress (Enter on a `.pkg`).
 - Safety: protected system paths, an explicit "unsafe" mode for system areas, CSRF header, DNS-rebinding protection.
-- Interface languages: English, Russian.
+- Interface languages: English, Russian, Ukrainian, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Czech, Turkish, Swedish, Danish, Norwegian, Finnish, Hungarian, Romanian, Greek, Indonesian, Vietnamese (web interface only; the app picks the console language automatically).
 
 ## Status
 Early development (v0.1). A gamepad-driven PKG application is planned.
