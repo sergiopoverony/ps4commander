@@ -109,7 +109,7 @@ sce_sys/param.sfo: Makefile
 	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '01.00'
 
 eboot.bin: $(OBJS) $(FF_LIBS)
-	$(LD) $(OBJS) --start-group $(FF_LIBS) --end-group -o $(INTDIR)/ps4commander_app.elf $(LDFLAGS)
+	$(LD) $(OBJS) --start-group $(FF_LIBS) --end-group --wrap=pthread_create -o $(INTDIR)/ps4commander_app.elf $(LDFLAGS)
 	$(TOOLCHAIN)/bin/$(CDIR)/create-fself -in=$(INTDIR)/ps4commander_app.elf -out=$(INTDIR)/ps4commander_app.oelf --eboot "eboot.bin" --paid 0x3800000000000010
 
 $(INTDIR)/%.o: $(PROJDIR)/%.cpp

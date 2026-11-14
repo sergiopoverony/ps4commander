@@ -25,7 +25,18 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
-extern "C" int pthread_setattr_default_np(const pthread_attr_t*) __attribute__((weak));   // есть не во всех сборках libc
+// Потоки libav создаются через pthread_create со стеком по умолчанию (128 КБ в musl) - подменяем вызов (ключ --wrap в Makefile) и даём 1 МБ.
+extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
+extern "C" int __wrap_pthread_create(pthread_t* t, const pthread_attr_t* a, void* (*fn)(void*), void* arg)
+{
+    if (a) return __real_pthread_create(t, a, fn, arg);
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 1024 * 1024);
+    int r = __real_pthread_create(t, &at, fn, arg);
+    pthread_attr_destroy(&at);
+    return r;
+}
 
 namespace {
 
@@ -409,8 +420,6 @@ AvEngine* ave_start(const std::string& path, std::string& err)
     if (service_read_range(path, 0, 1, probe, &total) < 0 || total == 0) { err = "noconn"; delete E; return nullptr; }
     E->io.path = path; E->io.size = (int64_t)total; E->io.quit = &E->quit;
 
-    // потоки libav (кадровые потоки декодера): стек по умолчанию в musl мал
-    { pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 1024 * 1024); if (pthread_setattr_default_np) pthread_setattr_default_np(&at); pthread_attr_destroy(&at); }
 
     const int bufSize = 256 * 1024;
     uint8_t* buf = (uint8_t*)av_malloc(bufSize);
