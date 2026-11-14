@@ -152,6 +152,7 @@ struct AvEngine {
     Picture back;
     OrbisPthreadMutex picMu;
     std::atomic<int> newFrame{ 0 };
+    std::atomic<int> slow{ 0 };
     std::atomic<int> videoReady{ 0 };                // показан первый кадр (до этого звук молчит)
     uint64_t startUs = 0;
     OrbisPthread thDemux, thVideo, thAudio;
@@ -245,6 +246,7 @@ void* video_main(void* arg)
         if (nw - t0 >= 5000000ULL) {
             logf_("avengine(video): decoded %d, shown %d, skipped %d in %.1f s; decode %.1f ms/frame, convert %.1f ms, max lag %lld ms",
                   decoded, frames, dropped, (nw - t0) / 1e6, decoded ? decUs / 1000.0 / decoded : 0.0, frames ? cvtUs / 1000.0 / frames : 0.0, maxLag);
+            if (decoded >= 50 && dropped * 10 >= decoded * 3) E->slow = 1;
             frames = dropped = decoded = 0; decUs = cvtUs = 0; maxLag = 0; t0 = nw;
         }
         AVPacket* p = E->vq.pop();
@@ -543,3 +545,5 @@ bool ave_poll(AvEngine* E, Picture& pic)
     scePthreadMutexUnlock(&E->picMu);
     return true;
 }
+
+bool ave_slow(AvEngine* E) { return E && E->slow.load() != 0; }

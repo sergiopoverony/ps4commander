@@ -18,3 +18,4 @@ long long ave_time_ms(AvEngine* e);
 long long ave_total_ms(AvEngine* e);                                // 0 - неизвестно
 bool ave_seekable(AvEngine* e);
 bool ave_poll(AvEngine* e, Picture& pic);                           // true - забран новый кадр
+bool ave_slow(AvEngine* e);                                      // декодер систематически не успевает

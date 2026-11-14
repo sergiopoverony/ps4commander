@@ -424,6 +424,7 @@ struct Session {
     std::atomic<int> jumpDone{ 1 };         // плеер сообщил (событие 32), что предыдущая перемотка выполнена
     bool pausedApplied = false;             // какое состояние паузы уже передано плееру
     std::atomic<AvEngine*> eng{ nullptr }; // универсальный проигрыватель на FFmpeg (когда системный плеер не умеет файл)
+    std::atomic<int> noEngine{ 0 };        // FFmpeg не справился - играет системный плеер, обратно не переключаемся
     std::atomic<int> wantEngine{ 0 };      // просьба перейти на проигрыватель FFmpeg
 };
 void cb_event(void* p, int32_t ev, int32_t srcId, void*)
@@ -450,22 +451,22 @@ alignas(256) int16_t g_aout[1024 * 2];
 void sleep_ms(int ms) { sceKernelUsleep((unsigned)ms * 1000u); }
 
 // Проигрыватель на FFmpeg: сессия только передаёт ему паузу/перемотку и следит за состоянием.
-void run_engine(Session* S)
+// Возврат: 0 - доиграно/остановлено, 1 - не запустился, 2 - не успевает по скорости (final=false: можно отдать системному плееру).
+int run_engine(Session* S, bool final)
 {
     std::string err;
     AvEngine* E = ave_start(S->path, err);
     if (!E) {
         logf_("video: FFmpeg player failed: %s", err.c_str());
-        if (S->err.empty()) S->err = err;
-        S->state = 4;
-        return;
+        if (final) { if (S->err.empty()) S->err = err; S->state = 4; }
+        return 1;
     }
     S->durMs = ave_total_ms(E);
     S->hasVideo = ave_has_video(E) ? 1 : 0;
     if (S->hasVideo) S->note.clear();
     else if (S->note.empty()) S->note = ave_info(E);
     S->eng = E;
-    bool pausedApplied = false;
+    bool pausedApplied = false, slow = false;
     while (!S->stop) {
         bool wp = S->paused != 0;
         if (wp != pausedApplied) { ave_pause(E, wp); pausedApplied = wp; }
@@ -474,12 +475,19 @@ void run_engine(Session* S)
         int st = ave_state(E);
         if (S->durMs == 0) S->durMs = ave_total_ms(E);
         S->state = st;
+        if (!final && ave_slow(E)) { slow = true; break; }
         sleep_ms(20);
     }
     S->eng = nullptr;
     sleep_ms(100);                       // интерфейс мог в этот момент опрашивать кадр
     ave_stop(E);
     logf_("video: FFmpeg player stopped");
+    if (slow) {
+        logf_("video: FFmpeg decoding is too slow for this file, switching to the console player");
+        S->noEngine = 1; S->state = 1; S->durMs = 0; S->hasVideo = 0; S->gotPicture = 0; S->note.clear();
+        return 2;
+    }
+    return 0;
 }
 
 bool system_friendly(const std::string& path)
@@ -519,7 +527,11 @@ void* video_main(void* arg)
 
 void* video_main_inner(Session* S)
 {
-    if (!system_friendly(S->path)) { logf_("video: container is not handled by the console player, using the FFmpeg player"); run_engine(S); return NULL; }
+    if (!system_friendly(S->path)) { logf_("video: container is not handled by the console player, using the FFmpeg player"); run_engine(S, true); return NULL; }
+    if (run_engine(S, false) == 0) return NULL;
+    if (S->stop) return NULL;
+    S->noEngine = 1;
+    logf_("video: using the console player");
     mem_init();
     if (!load_api()) { S->err = g_loadErr; S->state = 4; return NULL; }
 
@@ -559,8 +571,8 @@ void* video_main_inner(Session* S)
     if (g_mvhdMs <= 0 && g_mehdUnits > 0 && g_mvhdTs > 0) g_mvhdMs = (long long)(g_mehdUnits * 1000ULL / (uint64_t)g_mvhdTs);
     logf_("video: mvhd timescale=%lld duration=%lld ms, mehd=%llu", g_mvhdTs, g_mvhdMs, (unsigned long long)g_mehdUnits);
     if (g_mvhdMs > 0) { S->durMs = g_mvhdMs; logf_("video: mp4 duration %lld ms", g_mvhdMs); }
-    else { logf_("video: mp4 has no duration/index (fragmented), using the FFmpeg player"); run_engine(S); return NULL; }
-    if (!vinfo.empty() && vinfo.compare(0, 5, "H.264") != 0) { logf_("video: video codec '%s' is not handled by the console player, using the FFmpeg player", vinfo.c_str()); run_engine(S); return NULL; }
+    else if (!S->noEngine) { logf_("video: mp4 has no duration/index (fragmented), using the FFmpeg player"); run_engine(S, true); return NULL; }
+    if (!S->noEngine && !vinfo.empty() && vinfo.compare(0, 5, "H.264") != 0) { logf_("video: video codec '%s' is not handled by the console player, using the FFmpeg player", vinfo.c_str()); run_engine(S, true); return NULL; }
     logf_("video: mp4 video track: %s", vinfo.empty() ? "none / not parsed" : vinfo.c_str());
     if (S->stop) return NULL;
 
@@ -623,12 +635,12 @@ void* video_main_inner(Session* S)
         if (er < 0) logf_("video: enable stream %d failed for good (0x%08X)", i, (unsigned)er);
         if (isV) { vEn = er >= 0; S->hasVideo = vEn ? 1 : 0; } else aEn = er >= 0;
     }
-    if (vTried && !vEn && !S->stop) {      // системный плеер не взял видеодорожку (HEVC, VP9 и т.п.) - пробуем FFmpeg
+    if (vTried && !vEn && !S->stop && !S->noEngine) {      // системный плеер не взял видеодорожку (HEVC, VP9 и т.п.) - пробуем FFmpeg
         logf_("video: console player cannot open the video track, using the FFmpeg player");
         S->player = nullptr;
         g_api.stop(h); g_api.close(h);
         sleep_ms(300);
-        run_engine(S);
+        run_engine(S, true);
         return NULL;
     }
     if (vEn) S->note.clear();
@@ -742,7 +754,7 @@ void* video_main_inner(Session* S)
     g_api.stop(h);
     g_api.close(h);
     sleep_ms(300);                         // дать внутренним потокам библиотеки завершиться
-    if (switchEngine && !S->stop) run_engine(S);
+    if (switchEngine && !S->stop) run_engine(S, true);
     return NULL;
 }
 
@@ -864,7 +876,7 @@ void* vdec_main(void* arg)
             if (!logged && !noFrameLogged && sceKernelGetProcessTime() - t0 > 4000000ULL) {
                 noFrameLogged = true;
                 logf_("video: no video frame after 4 s (active=%d, time=%llu ms), switching to the FFmpeg player", (int)g_api.isActive(p), (unsigned long long)g_api.curTime(p));
-                if (S->hasVideo) S->wantEngine = 1;
+                if (S->hasVideo && !S->noEngine) S->wantEngine = 1;
             }
             sleep_ms(3); continue;
         }
