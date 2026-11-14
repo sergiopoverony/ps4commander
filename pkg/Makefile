@@ -117,7 +117,7 @@ eboot.bin: $(OBJS) $(OH_OBJS)
 $(INTDIR)/%.o: $(PROJDIR)/%.cpp
 	$(CCX) $(CXXFLAGS) -I$(OH_DIR)/api/wels -o $@ $<
 
-$(foreach f,$(OH_SRCS),$(eval $(INTDIR)/oh264_$(basename $(notdir $f)).o: $(f) ; $(CCX) $(CXXFLAGS) -O3 -w -D__ORBIS_PORT__=1 -D_GNU_SOURCE $(OH_INC) -o $$@ $$<))
+$(foreach f,$(OH_SRCS),$(eval $(INTDIR)/oh264_$(basename $(notdir $f)).o: $(f) ; $(CCX) $(CXXFLAGS) -O3 -march=btver2 -w -D__ORBIS_PORT__=1 -D_GNU_SOURCE $(OH_INC) -o $$@ $$<))
 
 clean:
 	rm -rf $(CONTENT_ID).pkg pkg.gp4 eboot.bin build sce_sys sce_module assets/misc/ps4commander.elf assets/misc/lang_en.json assets/misc/lang_ru.json

@@ -426,6 +426,10 @@ struct Session {
     bool swValid = false;
     std::atomic<int> swActive{ 0 };         // 1 - картинку даёт программный декодер, кадры системного плеера отбрасываются
     std::atomic<long long> swSeekMs{ -1 };  // просьба программному декодеру перейти к позиции
+    // Часы воспроизведения по выведенному звуку: часы системного плеера стоят, пока он не получит видео (в логе time=0 ms).
+    std::atomic<long long> clockBaseMs{ 0 };
+    std::atomic<long long> clockFrames{ 0 };   // звуковых кадров (48 кГц), выведенных с момента clockBaseMs
+    long long clock_ms() const { return clockBaseMs.load() + clockFrames.load() * 1000 / 48000; }
 };
 void cb_event(void* p, int32_t ev, int32_t srcId, void*)
 {
@@ -627,6 +631,7 @@ void* video_main_inner(Session* S)
             if (cur < 0) cur = 0;
             int jr = g_api.jump(h, (uint64_t)cur);
             logf_("video: jump to %lld ms = 0x%08X", cur, (unsigned)jr);
+            S->clockBaseMs = cur; S->clockFrames = 0;
             if (S->swActive) S->swSeekMs = cur;
             q.clear(); qpos = 0;              // звук, накопленный до перемотки, больше не нужен
             idleSince = 0;
@@ -669,6 +674,7 @@ void* video_main_inner(Session* S)
                     memset(g_aout, 0, sizeof(g_aout));
                 } else continue;
                 sceAudioOutOutput(ao, g_aout);
+                if (!S->paused) S->clockFrames += 1024;
             } else if (!got) sleep_ms(10);
         } else sleep_ms(20);
 
@@ -752,6 +758,7 @@ double video_seconds()
 {
     void* p = g_s ? g_s->player : nullptr;
     if (!p || g_s->state != 2) return 0;
+    if (g_s->swActive) return (double)g_s->clock_ms() / 1000.0;
     return (double)g_api.curTime(p) / 1000.0;
 }
 
@@ -839,13 +846,13 @@ void* sw_main(void* arg)
         decUs += sceKernelGetProcessTime() - d0;
         void* p = S->player;
         if (!p) break;
-        if (!firstLogged) { firstLogged = true; logf_("video: software frame %dx%d pts=%lld ms, player time=%llu ms", f.w, f.h, f.ptsMs, (unsigned long long)g_api.curTime(p)); }
-        uint64_t ct = g_api.curTime(p);
-        if ((long long)ct > f.ptsMs + 300) { dropped++; continue; }                      // опоздали - только декодируем, не показываем
+        if (!firstLogged) { firstLogged = true; logf_("video: software frame %dx%d pts=%lld ms, audio clock=%lld ms", f.w, f.h, f.ptsMs, S->clock_ms()); }
+        long long ct = S->clock_ms();
+        if (ct > f.ptsMs + 300) { dropped++; continue; }                      // опоздали - только декодируем, не показываем
         bool seekPending = false;
-        while ((long long)ct + 20 < f.ptsMs && !g_vstop && !S->stop) {                // рано - ждём часы плеера (на паузе они стоят)
+        while (ct + 20 < f.ptsMs && !g_vstop && !S->stop) {                // рано - ждём часы плеера (на паузе они стоят)
             if (S->swSeekMs.load() >= 0) { seekPending = true; break; }
-            sleep_ms(4); ct = g_api.curTime(p);
+            sleep_ms(4); ct = S->clock_ms();
         }
         if (seekPending || g_vstop || S->stop) continue;
         uint64_t c0 = sceKernelGetProcessTime();
