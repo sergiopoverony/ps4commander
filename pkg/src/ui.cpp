@@ -499,8 +499,8 @@ static std::string ext_of(const std::string& n)
 static bool in_list(const std::string& e, std::initializer_list<const char*> l) { for (auto s : l) if (e == s) return true; return false; }
 static bool is_image_ext(const std::string& e) { return in_list(e, { "png", "jpg", "jpeg", "bmp", "gif" }); }
 static bool is_audio_ext(const std::string& e) { return in_list(e, { "mp3", "ogg", "wav" }); }
-static bool is_av_ext(const std::string& e) { return in_list(e, { "mp4", "m4v", "mov", "3gp", "m4a", "aac" }); }   // системный плеер консоли
-static bool is_audio_unsupported(const std::string& e) { return in_list(e, { "flac", "wma", "opus", "mid", "midi", "ac3", "at9" }); }
+static bool is_av_ext(const std::string& e) { return in_list(e, { "mp4", "m4v", "mov", "3gp", "m4a", "aac", "mkv", "webm", "avi", "ts", "m2ts", "wmv", "flv", "mpg", "mpeg", "flac", "opus", "wma", "ac3", "mka", "wv", "ape" }); }   // системный плеер консоли или FFmpeg
+static bool is_audio_unsupported(const std::string& e) { return in_list(e, { "mid", "midi", "at9" }); }
 static bool is_video_ext(const std::string& e) { return in_list(e, { "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "wmv", "flv", "mpg", "mpeg", "3gp" }); }
 static const int64_t MEDIA_MAX = 32LL * 1024 * 1024 - 4096;    // службу читаем целиком в память, потолок ответа 32 МБ
 
@@ -598,7 +598,7 @@ static void open_file(int pi, bool viaCross)
         return;
     }
     if (is_video_ext(ext)) { text_open(name, tr("noVideo", "Video playback is not supported in the app. Open the web interface (port 8484) in a browser."), true); return; }
-    if (is_audio_unsupported(ext)) { text_open(name, tr("noFormat", "This audio format is not supported in the app (MP3, OGG, WAV only)."), true); return; }
+    if (is_audio_unsupported(ext)) { text_open(name, tr("noFormat", "This audio format is not supported in the app (MIDI is not supported)."), true); return; }
     view_text(path, name);
 }
 
