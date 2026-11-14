@@ -20,3 +20,7 @@ MP3 decoder used only by the gamepad PKG app (`pkg/src/minimp3.h`) to play music
 
 ## stb_image / stb_vorbis
 Image (PNG/JPG/BMP/GIF) and OGG Vorbis decoders from the OpenOrbis toolchain (`stb/`), used only by the gamepad PKG app. Public domain / MIT (Sean Barrett), https://github.com/nothings/stb
+
+## OpenH264 (decoder only)
+Software H.264 decoder from Cisco OpenH264 v2.7.0 (BSD-2-Clause), `pkg/third_party_openh264/` (the decoder and common parts only, no assembly; license in `pkg/third_party_openh264/LICENSE`), https://github.com/cisco/openh264
+Used only by the gamepad PKG app as a fallback when the console's own video decoder does not output frames for a stream. H.264 may be covered by patents in some regions; Cisco's patent licence applies only to the binaries it distributes, not to builds from source.

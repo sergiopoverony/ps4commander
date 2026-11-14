@@ -35,6 +35,12 @@ INTDIR      := build/obj
 CPPFILES    := $(wildcard $(PROJDIR)/*.cpp)
 OBJS        := $(patsubst $(PROJDIR)/%.cpp, $(INTDIR)/%.o, $(CPPFILES))
 
+# Программный декодер H.264 (OpenH264, BSD-2): нужен, когда системный декодер не выдаёт кадры. Собирается без ассемблера.
+OH_DIR      := third_party_openh264/codec
+OH_SRCS     := $(wildcard $(OH_DIR)/common/src/*.cpp $(OH_DIR)/decoder/core/src/*.cpp $(OH_DIR)/decoder/plus/src/*.cpp)
+OH_OBJS     := $(foreach f,$(OH_SRCS),$(INTDIR)/oh264_$(basename $(notdir $f)).o)
+OH_INC      := -I$(OH_DIR)/api/wels -I$(OH_DIR)/api -I$(OH_DIR)/common/inc -I$(OH_DIR)/decoder/core/inc -I$(OH_DIR)/decoder/plus/inc -I$(OH_DIR)
+
 CXXFLAGS    := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c $(EXTRAFLAGS) -DAPP_VERSION=\"$(APPVER)\" \
                -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
 LDFLAGS     := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
@@ -104,12 +110,14 @@ sce_sys/param.sfo: Makefile
 	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
 	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '01.00'
 
-eboot.bin: $(OBJS)
+eboot.bin: $(OBJS) $(OH_OBJS)
 	$(LD) $(INTDIR)/*.o -o $(INTDIR)/ps4commander_app.elf $(LDFLAGS)
 	$(TOOLCHAIN)/bin/$(CDIR)/create-fself -in=$(INTDIR)/ps4commander_app.elf -out=$(INTDIR)/ps4commander_app.oelf --eboot "eboot.bin" --paid 0x3800000000000010
 
 $(INTDIR)/%.o: $(PROJDIR)/%.cpp
-	$(CCX) $(CXXFLAGS) -o $@ $<
+	$(CCX) $(CXXFLAGS) -I$(OH_DIR)/api/wels -o $@ $<
+
+$(foreach f,$(OH_SRCS),$(eval $(INTDIR)/oh264_$(basename $(notdir $f)).o: $(f) ; $(CCX) $(CXXFLAGS) -O3 -w $(OH_INC) -o $$@ $$<))
 
 clean:
 	rm -rf $(CONTENT_ID).pkg pkg.gp4 eboot.bin build sce_sys sce_module assets/misc/ps4commander.elf assets/misc/lang_en.json assets/misc/lang_ru.json

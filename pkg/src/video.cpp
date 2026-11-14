@@ -1,4 +1,5 @@
 #include "video.h"
+#include "swvideo.h"
 #include "service.h"
 #include "log.h"
 
@@ -421,6 +422,10 @@ struct Session {
     std::atomic<int> seekMs{ 0 };           // просьба о перемотке от интерфейса (выполняет поток сессии)
     std::atomic<int> jumpDone{ 1 };         // плеер сообщил (событие 32), что предыдущая перемотка выполнена
     bool pausedApplied = false;             // какое состояние паузы уже передано плееру
+    OrbisPthread swth;                      // поток программного декодера H.264 (запасной путь)
+    bool swValid = false;
+    std::atomic<int> swActive{ 0 };         // 1 - картинку даёт программный декодер, кадры системного плеера отбрасываются
+    std::atomic<long long> swSeekMs{ -1 };  // просьба программному декодеру перейти к позиции
 };
 void cb_event(void* p, int32_t ev, int32_t srcId, void*)
 {
@@ -622,6 +627,7 @@ void* video_main_inner(Session* S)
             if (cur < 0) cur = 0;
             int jr = g_api.jump(h, (uint64_t)cur);
             logf_("video: jump to %lld ms = 0x%08X", cur, (unsigned)jr);
+            if (S->swActive) S->swSeekMs = cur;
             q.clear(); qpos = 0;              // звук, накопленный до перемотки, больше не нужен
             idleSince = 0;
         }
@@ -679,6 +685,8 @@ void* video_main_inner(Session* S)
     g_vstop = 1;
     if (g_vthValid) scePthreadJoin(g_vth, NULL);
     g_vthValid = false;
+    if (S->swValid) scePthreadJoin(S->swth, NULL);
+    S->swValid = false;
     S->player = nullptr;
     g_api.stop(h);
     g_api.close(h);
@@ -776,6 +784,91 @@ bool video_poll_frame()
 namespace {
 
 // Поток декодирования: забирает кадры NV12 у плеера и переводит в RGB (масштаб "по ближайшему" под 1600x900).
+// Перевод I420-кадра в RGB с масштабом на весь экран (те же формулы, что и для NV12 системного плеера).
+static void i420_to_rgb(const SwFrame& f, std::vector<uint32_t>& out, std::vector<int>& xs, int& dw, int& dh)
+{
+    int visW = f.w, visH = f.h;
+    double k = std::min(1920.0 / visW, 1080.0 / visH);
+    dw = std::max(2, (int)(visW * k)) & ~1; dh = std::max(2, (int)(visH * k)) & ~1;
+    out.resize((size_t)dw * dh);
+    xs.resize((size_t)dw);
+    for (int x = 0; x < dw; x++) xs[(size_t)x] = (int)((uint64_t)x * visW / dw);
+    bool hd = visH >= 720;
+    int cRV = hd ? 459 : 409, cGU = hd ? 55 : 100, cGV = hd ? 136 : 208, cBU = hd ? 541 : 516;
+    for (int y = 0; y < dh; y++) {
+        int sy = (int)((uint64_t)y * visH / dh);
+        const uint8_t* yr = f.y + (size_t)sy * f.strideY;
+        const uint8_t* ur = f.u + (size_t)(sy >> 1) * f.strideC;
+        const uint8_t* vr = f.v + (size_t)(sy >> 1) * f.strideC;
+        uint32_t* o = &out[(size_t)y * dw];
+        for (int x = 0; x < dw; x++) {
+            int sx = xs[(size_t)x];
+            int yy = ((int)yr[sx] - 16) * 298;
+            int u = (int)ur[sx >> 1] - 128, v = (int)vr[sx >> 1] - 128;
+            int R = (yy + cRV * v + 128) >> 8;
+            int G = (yy - cGU * u - cGV * v + 128) >> 8;
+            int B = (yy + cBU * u + 128) >> 8;
+            R = R < 0 ? 0 : R > 255 ? 255 : R; G = G < 0 ? 0 : G > 255 ? 255 : G; B = B < 0 ? 0 : B > 255 ? 255 : B;
+            o[x] = ((uint32_t)R << 16) | ((uint32_t)G << 8) | (uint32_t)B;
+        }
+    }
+}
+
+// Поток программного декодера: кадры показываются по часам системного плеера (звук идёт через него).
+void* sw_main(void* arg)
+{
+    Session* S = (Session*)arg;
+    std::string err;
+    SwVideo* v = sw_open(S->path, S->file.size.load(), err);
+    if (!v) {
+        logf_("video: software decoder unavailable: %s", err.c_str());
+        S->swActive = 0;
+        return NULL;
+    }
+    std::vector<uint32_t> out;
+    std::vector<int> xs;
+    int frames = 0, dropped = 0;
+    uint64_t t0 = sceKernelGetProcessTime(), convUs = 0, decUs = 0;
+    bool firstLogged = false;
+    while (!g_vstop && !S->stop) {
+        long long sk = S->swSeekMs.exchange(-1);
+        if (sk >= 0) sw_seek(v, sk);
+        SwFrame f;
+        uint64_t d0 = sceKernelGetProcessTime();
+        if (!sw_next(v, f)) { sleep_ms(20); continue; }       // файл закончился - ждём перемотку или остановку
+        decUs += sceKernelGetProcessTime() - d0;
+        void* p = S->player;
+        if (!p) break;
+        if (!firstLogged) { firstLogged = true; logf_("video: software frame %dx%d pts=%lld ms, player time=%llu ms", f.w, f.h, f.ptsMs, (unsigned long long)g_api.curTime(p)); }
+        uint64_t ct = g_api.curTime(p);
+        if ((long long)ct > f.ptsMs + 300) { dropped++; continue; }                      // опоздали - только декодируем, не показываем
+        bool seekPending = false;
+        while ((long long)ct + 20 < f.ptsMs && !g_vstop && !S->stop) {                // рано - ждём часы плеера (на паузе они стоят)
+            if (S->swSeekMs.load() >= 0) { seekPending = true; break; }
+            sleep_ms(4); ct = g_api.curTime(p);
+        }
+        if (seekPending || g_vstop || S->stop) continue;
+        uint64_t c0 = sceKernelGetProcessTime();
+        int dw, dh;
+        i420_to_rgb(f, out, xs, dw, dh);
+        convUs += sceKernelGetProcessTime() - c0;
+        scePthreadMutexLock(&g_picMu);
+        g_back.px.swap(out);
+        g_back.w = dw; g_back.h = dh;
+        g_newFrame = 1;
+        scePthreadMutexUnlock(&g_picMu);
+        frames++;
+        uint64_t now = sceKernelGetProcessTime();
+        if (now - t0 >= 5000000ULL) {
+            logf_("video(sw): %d frames in %.1f s (dropped %d), decode %.1f ms, convert %.1f ms", frames, (now - t0) / 1e6, dropped,
+                  (frames + dropped) ? decUs / 1000.0 / (frames + dropped) : 0.0, frames ? convUs / 1000.0 / frames : 0.0);
+            frames = 0; dropped = 0; convUs = 0; decUs = 0; t0 = now;
+        }
+    }
+    sw_close(v);
+    return NULL;
+}
+
 void* vdec_main(void* arg)
 {
     Session* S = (Session*)arg;
@@ -794,13 +887,23 @@ void* vdec_main(void* arg)
         memset(raw, 0, sizeof(raw));
         AvFrameEx* f = (AvFrameEx*)raw;
         if (!g_api.getVideoEx(p, f) || !f->data) {
-            if (!logged && !noFrameLogged && sceKernelGetProcessTime() - t0 > 6000000ULL) {
+            if (!logged && !noFrameLogged && sceKernelGetProcessTime() - t0 > 4000000ULL) {
                 noFrameLogged = true;
-                logf_("video: no video frame after 6 s (active=%d, time=%llu ms)", (int)g_api.isActive(p), (unsigned long long)g_api.curTime(p));
+                logf_("video: no video frame after 4 s (active=%d, time=%llu ms), starting software H.264 decoder", (int)g_api.isActive(p), (unsigned long long)g_api.curTime(p));
+                if (S->hasVideo && !S->swValid) {
+                    OrbisPthreadAttr sa;
+                    scePthreadAttrInit(&sa);
+                    scePthreadAttrSetstacksize(&sa, 2 * 1024 * 1024);
+                    S->swActive = 1;
+                    S->swValid = scePthreadCreate(&S->swth, &sa, sw_main, S, "pc_swdec") == 0;
+                    if (!S->swValid) S->swActive = 0;
+                    scePthreadAttrDestroy(&sa);
+                }
             }
             sleep_ms(3); continue;
         }
 
+        if (S->swActive) continue;                      // картинку ведёт программный декодер; кадры плеера только забираем, чтобы он не встал
         // Плеер отдаёт кадры без привязки ко времени: сверяем метку кадра с часами плеера (иначе видео идёт быстрее звука).
         {
             uint64_t ts = f->timestamp;
