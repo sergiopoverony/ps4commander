@@ -37,7 +37,7 @@ OBJS        := $(patsubst $(PROJDIR)/%.cpp, $(INTDIR)/%.o, $(CPPFILES))
 
 # FFmpeg (LGPL-2.1, статические библиотеки, собраны отдельно - см. third_party_ffmpeg/BUILD.md)
 FF_DIR      := third_party_ffmpeg
-FF_LIBS     := $(FF_DIR)/lib/libavformat.a $(FF_DIR)/lib/libavcodec.a $(FF_DIR)/lib/libswscale.a $(FF_DIR)/lib/libswresample.a $(FF_DIR)/lib/libavutil.a
+FF_LIBS     := $(FF_DIR)/lib/libavformat.a $(FF_DIR)/lib/libavcodec.a $(FF_DIR)/lib/libswscale.a $(FF_DIR)/lib/libswresample.a $(FF_DIR)/lib/libavutil.a $(FF_DIR)/lib/libdav1d.a
 
 CXXFLAGS    := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c $(EXTRAFLAGS) -DAPP_VERSION=\"$(APPVER)\" \
                -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1

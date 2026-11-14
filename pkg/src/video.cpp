@@ -412,6 +412,7 @@ struct Session {
     std::atomic<int> state{ 1 };
     std::atomic<long long> durMs{ 0 };
     std::atomic<int> hasVideo{ 0 };
+    std::atomic<int> gotPicture{ 0 };      // системный плеер выдал первый кадр (до этого звук не включаем)
     void* player = nullptr;
     std::string err;
     std::string note;                       // пояснение для экрана (например, кодек, который плеер консоли не умеет)
@@ -705,7 +706,8 @@ void* video_main_inner(Session* S)
                 }
             }
         }
-        if (aEn) {
+        if (aEn && S->hasVideo && !S->gotPicture) { q.clear(); qpos = 0; sleep_ms(5); }   // картинки ещё нет - звук не запускаем
+        else if (aEn) {
             if (ao < 0 && sceKernelGetProcessTime() >= aoRetryAt) {
                 ao = audio_shared_port();
                 if (aoFails++ < 3 || ao >= 0) logf_("video: audio port = 0x%08X", (unsigned)ao);
@@ -938,6 +940,7 @@ void* vdec_main(void* arg)
         g_back.px.swap(out);
         g_back.w = dw; g_back.h = dh;
         g_newFrame = 1;
+        S->gotPicture = 1;
         scePthreadMutexUnlock(&g_picMu);
         frames++;
         uint64_t now = sceKernelGetProcessTime();

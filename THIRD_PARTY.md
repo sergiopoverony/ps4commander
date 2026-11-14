@@ -23,4 +23,5 @@ Image (PNG/JPG/BMP/GIF) and OGG Vorbis decoders from the OpenOrbis toolchain (`s
 
 ## FFmpeg (libavformat, libavcodec, libavutil, libswscale, libswresample)
 FFmpeg n7.1.1 (LGPL-2.1-or-later, built without GPL/nonfree parts), static libraries in `pkg/third_party_ffmpeg/` (licence: `COPYING.LGPLv2.1`, build notes: `BUILD.md`), https://ffmpeg.org
+Includes all built-in decoders/demuxers (no encoders, no network). AV1 is decoded by dav1d 1.5.1 (BSD-2-Clause, https://code.videolan.org/videolan/dav1d, licence `pkg/third_party_ffmpeg/COPYING.dav1d.BSD2`).
 Used only by the gamepad PKG app as a universal video player for containers and codecs the console's own player cannot handle. Some codecs may be covered by patents in some regions.

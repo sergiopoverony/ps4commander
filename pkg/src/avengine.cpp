@@ -152,6 +152,8 @@ struct AvEngine {
     Picture back;
     OrbisPthreadMutex picMu;
     std::atomic<int> newFrame{ 0 };
+    std::atomic<int> videoReady{ 0 };                // показан первый кадр (до этого звук молчит)
+    uint64_t startUs = 0;
     OrbisPthread thDemux, thVideo, thAudio;
     bool vDemux = false, vVideo = false, vAudio = false;
     int audioPort = -1;
@@ -221,6 +223,7 @@ void publish(AvEngine* E, std::vector<uint32_t>& out, int w, int h)
     E->back.px.swap(out);
     E->back.w = w; E->back.h = h;
     E->newFrame = 1;
+    E->videoReady = 1;
     scePthreadMutexUnlock(&E->picMu);
 }
 
@@ -364,7 +367,7 @@ void* audio_main(void* arg)
             }
         }
         if (E->audioPort < 0) { sleep_ms(10); continue; }
-        if (E->paused) {
+        if (E->paused || (E->vs >= 0 && !E->videoReady && now_us() - E->startUs < 4000000ULL)) {
             memset(g_aout, 0, sizeof(g_aout));
             sceAudioOutOutput(E->audioPort, g_aout);
             continue;
@@ -468,6 +471,7 @@ AvEngine* ave_start(const std::string& path, std::string& err)
         if (E->audioPort < 0) logf_("avengine: no audio port (0x%08X)", (unsigned)E->audioPort);
     }
     clock_reset(E, 0);
+    E->startUs = now_us();
 
     OrbisPthreadAttr a;
     scePthreadAttrInit(&a);
