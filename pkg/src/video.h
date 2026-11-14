@@ -7,7 +7,8 @@
 #include "media.h"
 
 bool video_open(const std::string& path, int userId);   // запускает сессию в фоне
-void video_close();
+void video_close();                 // не блокирует: сессия завершается в фоне
+void video_shutdown(int maxMs);     // перед выходом из приложения: закрыть и подождать завершения не дольше maxMs
 int  video_state();                 // 0 - нет, 1 - запускается, 2 - играет, 3 - закончилось, 4 - ошибка
 std::string video_error();
 std::string video_note();           // кодек видеодорожки, которую плеер консоли не открыл (пусто - всё в порядке)

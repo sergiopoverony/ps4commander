@@ -30,6 +30,8 @@
 
 extern "C" uint64_t sceKernelGetProcessTime(void);
 extern "C" int sceSystemServiceHideSplashScreen(void);
+// Штатный выход на главный экран (имя через asm-метку, чтобы не спорить с объявлением в заголовках тулчейна).
+extern "C" int sys_load_exec(const char* path, char* const argv[]) __asm__("sceSystemServiceLoadExec");
 
 #ifndef APP_VERSION
 #define APP_VERSION "0.0.0.0"
@@ -813,7 +815,7 @@ static void smb_delete_conn(const SmbConnView& c)
 
 // ---------------------------------------------------------------- меню (как в вебе)
 
-enum MenuId { M_THEME, M_LANG, M_FIND, M_PROPS, M_INSTALL, M_PKGQ, M_RENAME, M_ROOTS, M_SMB, M_LOG, M_SUPPORT, M_HELP, M_UNSAFE, M_APPEXIT, M_QUIT, M_CLOSE, M_COUNT };
+enum MenuId { M_THEME, M_LANG, M_FIND, M_PROPS, M_INSTALL, M_PKGQ, M_RENAME, M_ROOTS, M_SMB, M_LOG, M_SUPPORT, M_HELP, M_UNSAFE, M_EXIT, M_CLOSE, M_COUNT };
 
 struct MenuItem { MenuId id; const char* key; const char* def; };
 static const MenuItem MENU[M_COUNT] = {
@@ -822,7 +824,7 @@ static const MenuItem MENU[M_COUNT] = {
     { M_PKGQ, "pkgQueue", "Installation queue" }, { M_RENAME, "rename", "Rename" }, { M_ROOTS, "roots", "Go to..." },
     { M_SMB, "smbTitle", "Network folders (SMB)" }, { M_LOG, "logTitle", "Log" }, { M_SUPPORT, "support", "Support the project" },
     { M_HELP, "help", "Help" }, { M_UNSAFE, "unsafeBtn", "Allow changes in system areas" },
-    { M_APPEXIT, "menuAppExit", "Close the app" }, { M_QUIT, "menuStopSvc", "Stop the service and exit" }, { M_CLOSE, "close", "Close" }
+    { M_EXIT, "appExit", "Exit" }, { M_CLOSE, "close", "Close" }
 };
 
 static std::string theme_name(const std::string& th)
@@ -851,14 +853,17 @@ static void cycle_lang()
 
 static void set_unsafe(bool on) { g_unsafe = on; service_set_unsafe(on); redraw(); }
 
-// Выход из приложения: останавливаем звук/видео и завершаем процесс без запуска деструкторов статических
-// объектов (рабочие потоки ещё живы и обращаются к ним - так выход заканчивался аварией).
+// Выход из приложения. Закрывается только приложение: служба продолжает работать (в ней может идти установка PKG).
+// Штатный выход на PS4 - sceSystemServiceLoadExec("exit"): обычные exit()/_exit() заканчивались ошибкой CE-34878-0.
 static void app_exit()
 {
+    logf_("ui: exit requested");
     audio_stop();
-    video_close();
-    logf_("ui: exit");
-    _exit(0);
+    video_shutdown(3000);
+    int r = sys_load_exec("exit", nullptr);
+    logf_("ui: sceSystemServiceLoadExec(exit) = 0x%08X", (unsigned)r);
+    // если система не закрыла приложение - остаёмся в нём (без аварийного завершения)
+    redraw();
 }
 
 static void menu_run(MenuId id)
@@ -884,12 +889,7 @@ static void menu_run(MenuId id)
         focus_push(F_DONATE);
         break;
     case M_HELP: text_open(tr("helpTitle", "Keys"), tr("helpPad", "")); break;
-    case M_APPEXIT: app_exit(); break;
-    case M_QUIT:
-        confirm_open(tr("menuStopSvc", "Stop the service and exit"), tr("quitQ", "Shut down ps4commander?"), tr("quit", "Quit"), []() {
-            act_async([](std::string&) { service_quit(); return true; }, []() { app_exit(); });
-        });
-        break;
+    case M_EXIT: app_exit(); break;      // закрывается только приложение; служба остаётся работать (может идти установка)
     default: break;
     }
 }
@@ -1168,7 +1168,7 @@ static void draw_menu()
         if (it.id == M_THEME) s += ":   < " + theme_name(gfx_theme()) + " >";
         else if (it.id == M_LANG) s += ":   < " + std::string(i18n_current() == "ru" ? "Russian" : "English") + " >";
         else if (it.id == M_UNSAFE) s = std::string(g_unsafe ? "[x] " : "[ ] ") + s;
-        else if (it.id == M_QUIT) fg = hl ? T.curFg : (T.modern ? T.warn : Color{ 150, 0, 0 });
+        else if (it.id == M_EXIT) fg = hl ? T.curFg : (T.modern ? T.warn : Color{ 150, 0, 0 });
         draw_text(s, x + 40, ry + 24, fg, bg);
         ry += rowH;
         if (it.id == M_UNSAFE) {
@@ -1586,7 +1586,10 @@ struct SvcRes { bool ok = false; std::string err, l, r, theme; };
 static void svc_worker(SvcRes& res)
 {
     std::vector<RootView> roots; std::string ver;
-    if (service_roots(roots, ver) && ver == APP_VERSION) { res.ok = true; }
+    bool have = service_roots(roots, ver) && ver == APP_VERSION;
+    // служба могла быть занята и не ответить вовремя: прежде чем перезапускать её, спрашиваем ещё раз
+    if (!have && ver.empty()) { usleep(300000); have = service_roots(roots, ver) && ver == APP_VERSION; }
+    if (have) { res.ok = true; }
     else {
         g_svcStage = 1;
         logf_("svc: service missing or version differs (service=%s app=%s), sending payload", ver.c_str(), APP_VERSION);

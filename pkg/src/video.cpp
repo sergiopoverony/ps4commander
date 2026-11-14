@@ -400,6 +400,12 @@ struct Session {
     void* player = nullptr;
     std::string err;
     std::string note;                       // пояснение для экрана (например, кодек, который плеер консоли не умеет)
+    OrbisPthread th;                        // поток этой сессии
+    Session* prev = nullptr;                // предыдущая (закрытая) сессия: её поток дожидаемся и освобождаем уже в своём потоке
+    std::atomic<int> done{ 0 };             // поток сессии полностью завершился
+    bool audioLogged = false;
+    std::atomic<int> seekMs{ 0 };           // просьба о перемотке от интерфейса (выполняет поток сессии)
+    bool pausedApplied = false;             // какое состояние паузы уже передано плееру
 };
 void cb_event(void* p, int32_t ev, int32_t srcId, void*)
 {
@@ -408,9 +414,8 @@ void cb_event(void* p, int32_t ev, int32_t srcId, void*)
     if (S && ev == 2) S->ready = 1;
 }
 
-Session* g_s = nullptr;
-OrbisPthread g_th;
-bool g_thValid = false;
+Session* g_s = nullptr;            // текущая сессия (то, что видит интерфейс)
+Session* g_tail = nullptr;         // закрытая сессия, которая ещё завершается в фоне (интерфейс её не ждёт)
 Picture g_pic;                    // то, что рисует главный поток
 Picture g_back;                   // готовый кадр от потока декодирования (под мьютексом)
 OrbisPthreadMutex g_picMu;
@@ -431,10 +436,21 @@ void* vdec_main(void* arg);
 void* video_main(void* arg)
 {
     Session* S = (Session*)arg;
-    void* r = video_main_inner(S);
+    // Сначала дожидаемся предыдущей сессии: две сессии системного плеера и два звуковых порта одновременно не держим.
+    if (S->prev) {
+        scePthreadJoin(S->prev->th, NULL);
+        delete S->prev;
+        S->prev = nullptr;
+    }
+    void* r = NULL;
+    if (!S->stop) {
+        g_newFrame = 0;
+        r = video_main_inner(S);
+    }
     S->file.quit = 1;
     if (S->file.thValid) scePthreadJoin(S->file.th, NULL);
     S->file.thValid = false;
+    S->done = 1;
     return r;
 }
 
@@ -448,6 +464,7 @@ void* video_main_inner(Session* S)
     unsigned long long total = 0;
     long pr = service_read_range(S->path, 0, 1, probe, &total);
     if (pr < 0 || total == 0) { S->err = "noconn"; S->state = 4; return NULL; }
+    if (S->stop) return NULL;
     S->file.size = total;
     S->file.path = S->path;
     scePthreadMutexInit(&S->file.mu, NULL, "pc_avrd");
@@ -461,6 +478,7 @@ void* video_main_inner(Session* S)
     logf_("video: file '%s' size %llu", S->path.c_str(), total);
     std::string vinfo = mp4_video_info(S->path, &S->note);
     logf_("video: mp4 video track: %s", vinfo.empty() ? "none / not parsed" : vinfo.c_str());
+    if (S->stop) return NULL;
 
     AvInit init;
     memset(&init, 0, sizeof(init));
@@ -479,7 +497,7 @@ void* video_main_inner(Session* S)
 
     int r = g_api.addSource(h, S->path.c_str());
     logf_("video: sceAvPlayerAddSource = 0x%08X", (unsigned)r);
-    if (r < 0) { S->err = "source"; S->state = 4; g_api.close(h); S->player = nullptr; return NULL; }
+    if (r < 0) { S->err = "source"; S->state = 4; S->player = nullptr; g_api.close(h); return NULL; }
 
     int n = 0;
     for (int i = 0; i < 300 && !S->stop; i++) {            // ждём до 15 с, пока библиотека разберёт файл
@@ -488,7 +506,12 @@ void* video_main_inner(Session* S)
         sleep_ms(50);
     }
     logf_("video: streams = %d", n);
-    if (n <= 0 && !S->stop) { S->err = "nostreams"; S->state = 4; g_api.stop(h); g_api.close(h); S->player = nullptr; return NULL; }
+    if (n <= 0 || S->stop) {
+        if (!S->stop) { S->err = "nostreams"; S->state = 4; }
+        S->player = nullptr;
+        g_api.stop(h); g_api.close(h);
+        return NULL;
+    }
 
     // Стримы включаем, когда библиотека готова (событие StateReady); если событие не пришло - всё равно пробуем,
     // а неудачные включения повторяем: сразу после разбора файла библиотека иногда отвечает ошибкой 0x806A0002.
@@ -517,7 +540,12 @@ void* video_main_inner(Session* S)
         if (isV) { vEn = er >= 0; S->hasVideo = vEn ? 1 : 0; } else aEn = er >= 0;
     }
     if (vEn) S->note.clear();
-    if (!vEn && !aEn && !S->stop) { S->err = "enable"; S->state = 4; g_api.stop(h); g_api.close(h); S->player = nullptr; return NULL; }
+    if ((!vEn && !aEn) || S->stop) {
+        if (!S->stop) { S->err = "enable"; S->state = 4; }
+        S->player = nullptr;
+        g_api.stop(h); g_api.close(h);
+        return NULL;
+    }
     sleep_ms(100);
     { int sr = g_api.start(h); logf_("video: sceAvPlayerStart = 0x%08X, active=%d", (unsigned)sr, (int)g_api.isActive(h)); }
     S->state = 2;
@@ -538,6 +566,24 @@ void* video_main_inner(Session* S)
     uint64_t idleSince = 0;
     int ticks = 0;
     while (!S->stop) {
+        // пауза и перемотка выполняются здесь, а не в потоке интерфейса: вызовы плеера могут задерживаться
+        bool wantPause = S->paused != 0;
+        if (wantPause != S->pausedApplied) {
+            int pr = wantPause ? g_api.pause(h) : g_api.resume(h);
+            if (pr < 0) logf_("video: %s = 0x%08X", wantPause ? "pause" : "resume", (unsigned)pr);
+            S->pausedApplied = wantPause;
+        }
+        int sk = S->seekMs.exchange(0);
+        if (sk != 0) {
+            long long cur = (long long)g_api.curTime(h) + sk;
+            long long dur = S->durMs;
+            if (dur > 0 && cur >= dur) cur = dur - 500;
+            if (cur < 0) cur = 0;
+            int jr = g_api.jump(h, (uint64_t)cur);
+            logf_("video: jump to %lld ms = 0x%08X", cur, (unsigned)jr);
+            q.clear(); qpos = 0;              // звук, накопленный до перемотки, больше не нужен
+            idleSince = 0;
+        }
         bool got = false;
         if (aEn && (q.size() - qpos) / 2 < 8192) {
             alignas(16) unsigned char raw[256];
@@ -547,8 +593,7 @@ void* video_main_inner(Session* S)
                 got = true;
                 uint16_t ch = *(uint16_t*)&af->details[0];
                 uint32_t rate = *(uint32_t*)&af->details[4], bytes = *(uint32_t*)&af->details[8];
-                static bool logged = false;
-                if (!logged) { logged = true; logf_("video: first audio frame ch=%u rate=%u bytes=%u", (unsigned)ch, rate, bytes); }
+                if (!S->audioLogged) { S->audioLogged = true; logf_("video: first audio frame ch=%u rate=%u bytes=%u", (unsigned)ch, rate, bytes); }
                 if (ch >= 1 && rate >= 8000 && bytes >= 2u * ch) {
                     const int16_t* pcm = (const int16_t*)af->data;
                     size_t frames = bytes / (2u * ch);
@@ -593,10 +638,10 @@ void* video_main_inner(Session* S)
     g_vstop = 1;
     if (g_vthValid) scePthreadJoin(g_vth, NULL);
     g_vthValid = false;
+    S->player = nullptr;
     g_api.stop(h);
     if (ao >= 0) sceAudioOutClose(ao);
     g_api.close(h);
-    S->player = nullptr;
     sleep_ms(300);                         // дать внутренним потокам библиотеки завершиться
     return NULL;
 }
@@ -608,31 +653,43 @@ void* video_main_inner(Session* S)
 bool video_open(const std::string& path, int userId)
 {
     video_close();
-    g_s = new Session();
-    g_s->path = path;
-    g_s->userId = userId;
+    Session* S = new Session();
+    S->path = path;
+    S->userId = userId;
+    S->prev = g_tail;
+    g_tail = nullptr;
     g_pic = Picture();
-    g_back = Picture();
-    g_newFrame = 0;
     OrbisPthreadAttr attr;
     scePthreadAttrInit(&attr);
     scePthreadAttrSetstacksize(&attr, 2 * 1024 * 1024);
-    int r = scePthreadCreate(&g_th, &attr, video_main, g_s, "pc_video");
+    int r = scePthreadCreate(&S->th, &attr, video_main, S, "pc_video");
     scePthreadAttrDestroy(&attr);
-    if (r != 0) { logf_("video: thread create failed 0x%08X", (unsigned)r); delete g_s; g_s = nullptr; return false; }
-    g_thValid = true;
+    if (r != 0) {
+        logf_("video: thread create failed 0x%08X", (unsigned)r);
+        g_tail = S->prev;
+        delete S;
+        return false;
+    }
+    g_s = S;
     return true;
 }
 
+// Закрытие не ждёт поток: системный плеер может секундами разбирать файл или ждать сеть, а интерфейс зависать не должен.
+// Сессия завершается в фоне; следующая сессия (или выход из приложения) дождётся её сама.
 void video_close()
 {
     if (!g_s) return;
     g_s->stop = 1;
-    if (g_thValid) scePthreadJoin(g_th, NULL);
-    g_thValid = false;
-    delete g_s;
+    g_s->file.quit = 1;          // прерывает ожидание чтения в колбэке плеера
+    g_tail = g_s;
     g_s = nullptr;
     g_pic = Picture();
+}
+
+void video_shutdown(int maxMs)
+{
+    video_close();
+    for (int i = 0; g_tail && !g_tail->done && i < maxMs / 20; i++) sceKernelUsleep(20000);
 }
 
 int video_state() { return g_s ? (int)g_s->state : 0; }
@@ -645,26 +702,21 @@ double video_total() { return g_s ? (double)g_s->durMs / 1000.0 : 0; }
 
 double video_seconds()
 {
-    if (!g_s || !g_s->player || g_s->state != 2) return 0;
-    return (double)g_api.curTime(g_s->player) / 1000.0;
+    void* p = g_s ? g_s->player : nullptr;
+    if (!p || g_s->state != 2) return 0;
+    return (double)g_api.curTime(p) / 1000.0;
 }
 
 void video_pause_toggle()
 {
-    if (!g_s || !g_s->player || g_s->state != 2) return;
-    if (g_s->paused) { g_api.resume(g_s->player); g_s->paused = 0; }
-    else { g_api.pause(g_s->player); g_s->paused = 1; }
+    if (!g_s || g_s->state != 2) return;
+    g_s->paused = g_s->paused ? 0 : 1;
 }
 
 void video_seek(int deltaMs)
 {
-    if (!g_s || !g_s->player || g_s->state != 2) return;
-    long long cur = (long long)g_api.curTime(g_s->player) + deltaMs;
-    if (cur < 0) cur = 0;
-    if (g_s->durMs > 0 && cur >= g_s->durMs) cur = g_s->durMs - 500;
-    if (cur < 0) cur = 0;
-    int r = g_api.jump(g_s->player, (uint64_t)cur);
-    logf_("video: jump to %lld ms = 0x%08X", cur, (unsigned)r);
+    if (!g_s || g_s->state != 2) return;
+    g_s->seekMs += deltaMs;
 }
 
 // Главный поток только забирает готовый кадр.
@@ -708,8 +760,17 @@ void* vdec_main(void* arg)
         }
         if (W < 16 || H < 16 || W > 4096 || H > 4096) continue;
         if (pitch < W) pitch = W;
-        // width/height совпадают с размерами потока; поля обрезки в этой версии структуры ненадёжны - не используем.
-        uint32_t codedH = (H + 15) & ~15u;                 // плоскость яркости занимает выровненную по 16 высоту
+        // width/height - размеры кадра декодера (выровнены по 16); видимая часть задаётся обрезкой:
+        // справа она отсчитывается от pitch, снизу - от height (по логу: 854x476 в кадре 864x480, pitch 896, R42 B4).
+        uint32_t codedH = (H + 15) & ~15u;
+        uint32_t visW = W, visH = H;
+        {
+            uint32_t cl = f->video.cropL, cr = f->video.cropR, ct = f->video.cropT, cb = f->video.cropB;
+            if (cl == 0 && ct == 0) {
+                if (cr < pitch && pitch - cr <= W && pitch - cr >= W / 2) visW = pitch - cr;
+                if (cb < H && H - cb >= H / 2) visH = H - cb;
+            }
+        }
         // Сначала целиком копируем кадр в обычную память: чтение декодерной памяти байт за байтом было в сотни раз медленнее
         // (около 500 мс на кадр 720p в логе) и кадр мог переиспользоваться декодером во время перевода в RGB.
         size_t lumaBytes = (size_t)pitch * codedH, chromaBytes = (size_t)pitch * ((H + 1) / 2);
@@ -719,17 +780,17 @@ void* vdec_main(void* arg)
         const uint8_t* C = Y + lumaBytes;
 
         uint64_t c0 = sceKernelGetProcessTime();
-        double k = std::min(1600.0 / W, 900.0 / H);
+        double k = std::min(1600.0 / visW, 900.0 / visH);
         if (k > 1.0) k = 1.0;
-        int dw = std::max(2, (int)(W * k)) & ~1, dh = std::max(2, (int)(H * k)) & ~1;
+        int dw = std::max(2, (int)(visW * k)) & ~1, dh = std::max(2, (int)(visH * k)) & ~1;
         out.resize((size_t)dw * dh);
         xs.resize((size_t)dw);
-        for (int x = 0; x < dw; x++) xs[(size_t)x] = (int)((uint64_t)x * W / dw);
-        bool hd = H >= 720;
+        for (int x = 0; x < dw; x++) xs[(size_t)x] = (int)((uint64_t)x * visW / dw);
+        bool hd = visH >= 720;
         int cRV = hd ? 459 : 409, cGU = hd ? 55 : 100, cGV = hd ? 136 : 208, cBU = hd ? 541 : 516;
         bool full = f->video.fullRange;
         for (int y = 0; y < dh; y++) {
-            uint32_t sy = (uint32_t)((uint64_t)y * H / dh);
+            uint32_t sy = (uint32_t)((uint64_t)y * visH / dh);
             const uint8_t* yr = Y + (size_t)sy * pitch;
             const uint8_t* cr_ = C + (size_t)(sy >> 1) * pitch;
             uint32_t* o = &out[(size_t)y * dw];
