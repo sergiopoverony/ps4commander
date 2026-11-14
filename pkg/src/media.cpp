@@ -249,16 +249,6 @@ struct Resampler {
 
 alignas(256) static int16_t g_out[1024 * 2];
 
-static int g_sharedPort = -1;
-int audio_shared_port()
-{
-    if (g_sharedPort >= 0) return g_sharedPort;
-    sceAudioOutInit();
-    int h = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
-    if (h >= 0) g_sharedPort = h;
-    return h;
-}
-
 static void* audio_main(void* arg)
 {
     Player* P = (Player*)arg;
@@ -312,6 +302,16 @@ static void* audio_main(void* arg)
 }
 
 } // namespace
+
+static int g_sharedPort = -1;
+int audio_shared_port()
+{
+    if (g_sharedPort >= 0) return g_sharedPort;
+    sceAudioOutInit();
+    int h = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    if (h >= 0) g_sharedPort = h;
+    return h;
+}
 
 bool audio_start(std::string& data, const std::string& ext, int userId)
 {
