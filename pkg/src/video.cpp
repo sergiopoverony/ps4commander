@@ -782,7 +782,9 @@ void* vdec_main(void* arg)
     std::vector<uint32_t> out;
     std::vector<int> xs;
     std::vector<uint8_t> frameCopy;
-    bool logged = false, noFrameLogged = false;
+    bool logged = false, noFrameLogged = false, haveTs = false;
+    uint64_t lastTs = 0;
+    int tsLogs = 0, dropped = 0;
     int frames = 0;
     uint64_t t0 = sceKernelGetProcessTime(), convUs = 0;
     while (!g_vstop && !S->stop) {
@@ -799,6 +801,18 @@ void* vdec_main(void* arg)
             sleep_ms(3); continue;
         }
 
+        // Плеер отдаёт кадры без привязки ко времени: сверяем метку кадра с часами плеера (иначе видео идёт быстрее звука).
+        {
+            uint64_t ts = f->timestamp;
+            if (haveTs && ts == lastTs) { sleep_ms(2); continue; }                // тот же кадр повторно
+            haveTs = true; lastTs = ts;
+            uint64_t ct = g_api.curTime(p);
+            if (tsLogs < 8) { tsLogs++; logf_("video: frame ts=%llu ms, player time=%llu ms", (unsigned long long)ts, (unsigned long long)ct); }
+            if (!S->paused) {
+                if (ts + 300 < ct) { dropped++; continue; }                          // сильно опоздали - пропускаем кадр
+                for (int w = 0; w < 25 && ts > ct + 30 && !g_vstop && !S->stop && !S->paused; w++) { sleep_ms(4); ct = g_api.curTime(p); }   // кадр раньше времени - ждём (не дольше 100 мс)
+            }
+        }
         uint32_t W = f->video.width, H = f->video.height, pitch = f->video.pitch;
         if (!logged) {
             logged = true;
@@ -862,8 +876,8 @@ void* vdec_main(void* arg)
         frames++;
         uint64_t now = sceKernelGetProcessTime();
         if (now - t0 >= 5000000ULL) {
-            logf_("video: %d frames in %.1f s, convert %.1f ms/frame", frames, (now - t0) / 1e6, frames ? convUs / 1000.0 / frames : 0.0);
-            frames = 0; convUs = 0; t0 = now;
+            logf_("video: %d frames in %.1f s (dropped %d), convert %.1f ms/frame", frames, (now - t0) / 1e6, dropped, frames ? convUs / 1000.0 / frames : 0.0);
+            frames = 0; dropped = 0; convUs = 0; t0 = now;
         }
     }
     return NULL;
