@@ -560,6 +560,7 @@ void* video_main_inner(Session* S)
     logf_("video: mvhd timescale=%lld duration=%lld ms, mehd=%llu", g_mvhdTs, g_mvhdMs, (unsigned long long)g_mehdUnits);
     if (g_mvhdMs > 0) { S->durMs = g_mvhdMs; logf_("video: mp4 duration %lld ms", g_mvhdMs); }
     else { logf_("video: mp4 has no duration/index (fragmented), using the FFmpeg player"); run_engine(S); return NULL; }
+    if (!vinfo.empty() && vinfo.compare(0, 5, "H.264") != 0) { logf_("video: video codec '%s' is not handled by the console player, using the FFmpeg player", vinfo.c_str()); run_engine(S); return NULL; }
     logf_("video: mp4 video track: %s", vinfo.empty() ? "none / not parsed" : vinfo.c_str());
     if (S->stop) return NULL;
 
