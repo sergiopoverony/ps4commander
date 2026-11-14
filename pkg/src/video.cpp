@@ -523,7 +523,7 @@ void* video_main_inner(Session* S)
     init.event = { S, (void*)cb_event };
     init.debugLevel = 0;
     init.basePriority = 700;
-    init.numFrameBuffers = 6;     // потоки с большим числом опорных кадров/B-кадров (например 4 ref) при 3 буферах не выдают ни одного кадра
+    init.numFrameBuffers = 12;     // потоки с большим числом опорных кадров/B-кадров (например 4 ref) при 3 буферах не выдают ни одного кадра
     init.autoStart = false;       // с автостартом плеер переходит в Play до того, как мы включим потоки, и тогда EnableStream отказывает (0x806A0002)
     init.defaultLanguage = "eng";
     void* h = g_api.init(&init);
