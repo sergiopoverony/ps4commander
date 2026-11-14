@@ -1378,7 +1378,11 @@ static void draw_video()
     int bx = 60, bw = FRAME_WIDTH - 120;
     fill(bx, 998, bw, 8, Color{ 70, 70, 70 });
     if (tot > 0) fill(bx, 998, std::max(4, (int)(bw * std::min(1.0, pos / tot))), 8, Color{ 138, 180, 255 });
-    put_center_rich(FRAME_WIDTH / 2, "{cross} " + tr("hint_pause", "pause / play") + "     {arrows} -10 / +10 s     {circle} " + tr("hint_stop", "stop"), 1050, dim, blk);
+    std::string vh = "{cross} " + tr("hint_pause", "pause / play");
+    if (video_seekable()) vh += "     {arrows} -10 / +10 s";
+    vh += "     {circle} " + tr("hint_stop", "stop");
+    put_center_rich(FRAME_WIDTH / 2, vh, 1050, dim, blk);
+    if (!video_seekable() && st == 2) put_center(FRAME_WIDTH / 2, fit(tr("hint_noseek", "seeking unavailable: the file has no index (fragmented MP4)"), 140), 1020, Color{ 255, 190, 120 }, blk);
 }
 
 static void draw_donate()

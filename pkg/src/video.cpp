@@ -753,9 +753,11 @@ void video_pause_toggle()
     g_s->paused = g_s->paused ? 0 : 1;
 }
 
+bool video_seekable() { return g_s && g_s->durMs > 0; }
+
 void video_seek(int deltaMs)
 {
-    if (!g_s || g_s->state != 2) return;
+    if (!g_s || g_s->state != 2 || g_s->durMs <= 0) return;
     g_s->seekMs += deltaMs;
 }
 

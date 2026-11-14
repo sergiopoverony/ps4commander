@@ -17,6 +17,7 @@ const Picture& video_picture();     // последний кадр (может �
 bool video_has_video();
 void video_pause_toggle();
 bool video_paused();
+bool video_seekable();             // false - длительность неизвестна (фрагментированный MP4 без индекса): прыжки плеера там дают случайные позиции
 void video_seek(int deltaMs);       // перемотка относительно текущего места
 double video_seconds();
 double video_total();

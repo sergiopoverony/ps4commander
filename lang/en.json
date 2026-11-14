@@ -246,6 +246,7 @@
   "audioErr": "Cannot play this file",
   "hint_pause": "pause / play",
   "hint_stop": "stop",
+  "hint_noseek": "seeking unavailable: the file has no index (fragmented MP4)",
   "appTooBig": "File is too large for the app (limit 32 MB)",
   "videoErr": "Cannot play this file",
   "vidNoDecode": "The video track ({c}) is not supported by the console player: audio only."
