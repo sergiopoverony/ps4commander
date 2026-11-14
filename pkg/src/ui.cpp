@@ -1347,13 +1347,15 @@ static void draw_audio()
     dlg_hint(x, y, w, h, "{cross} " + tr("hint_pause", "pause / play") + "     {arrows} -10 / +10 s     {circle} " + tr("hint_stop", "stop"));
 }
 
+static uint64_t g_vidOverlayUntil = 0;     // до какого момента показывать панель поверх видео
+
 static void draw_video()
 {
     Color blk = Color{ 0, 0, 0 }, dim = Color{ 190, 190, 190 };
     fill(0, 0, FRAME_WIDTH, FRAME_HEIGHT, blk);
     int st = video_state();
     const Picture& pic = video_picture();
-    if (!pic.px.empty()) gfx_blit((FRAME_WIDTH - pic.w) / 2, (940 - pic.h) / 2, pic.w, pic.h, pic.px.data());
+    if (!pic.px.empty()) gfx_blit((FRAME_WIDTH - pic.w) / 2, (FRAME_HEIGHT - pic.h) / 2, pic.w, pic.h, pic.px.data());
     std::string msg;
     Color mc = dim;
     if (st == 1) msg = tr("loading", "Loading...");
@@ -1365,6 +1367,9 @@ static void draw_video()
         put_center(FRAME_WIDTH / 2, fit(tr_sub("vidNoDecode", "The video track ({c}) is not supported by the console player: audio only.", { { "c", video_note() } }), 140), 530, Color{ 255, 190, 120 }, blk);
 
     // нижняя панель: имя, время, полоска, подсказка
+    bool showPanel = pic.px.empty() || video_paused() || st != 2 || now_us() < g_vidOverlayUntil;
+    if (!showPanel) return;
+    fill(0, 960, FRAME_WIDTH, FRAME_HEIGHT - 960, blk);
     double pos = video_seconds(), tot = video_total();
     std::string tm = fmt_time(pos) + (tot > 0 ? " / " + fmt_time(tot) : "");
     if (video_paused()) tm += "   " + tr("audioPaused", "Paused");
@@ -1767,6 +1772,7 @@ void ui_pump()
         break;
     }
     case F_VIDEO:
+        g_vidOverlayUntil = now_us() + 4000000ULL;
         if (cross) video_pause_toggle();
         else if (circle) { video_close(); focus_pop(); }
         else if (left) video_seek(-10000);

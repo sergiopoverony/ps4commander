@@ -405,6 +405,7 @@ struct Session {
     std::atomic<int> done{ 0 };             // поток сессии полностью завершился
     bool audioLogged = false;
     std::atomic<int> seekMs{ 0 };           // просьба о перемотке от интерфейса (выполняет поток сессии)
+    std::atomic<int> jumpDone{ 1 };         // плеер сообщил (событие 32), что предыдущая перемотка выполнена
     bool pausedApplied = false;             // какое состояние паузы уже передано плееру
 };
 void cb_event(void* p, int32_t ev, int32_t srcId, void*)
@@ -412,6 +413,7 @@ void cb_event(void* p, int32_t ev, int32_t srcId, void*)
     Session* S = (Session*)p;
     logf_("video: event %d src %d", (int)ev, (int)srcId);
     if (S && ev == 2) S->ready = 1;
+    if (S && ev == 32) S->jumpDone = 1;
 }
 
 Session* g_s = nullptr;            // текущая сессия (то, что видит интерфейс)
@@ -438,8 +440,10 @@ void* video_main(void* arg)
     Session* S = (Session*)arg;
     // Сначала дожидаемся предыдущей сессии: две сессии системного плеера и два звуковых порта одновременно не держим.
     if (S->prev) {
-        scePthreadJoin(S->prev->th, NULL);
-        delete S->prev;
+        // Если прошлая сессия застряла внутри системного плеера, ждём её недолго и идём дальше (её память оставляем)
+        for (int i = 0; i < 250 && !S->prev->done; i++) sceKernelUsleep(20000);
+        if (S->prev->done) { scePthreadJoin(S->prev->th, NULL); delete S->prev; }
+        else logf_("video: previous session is stuck, abandoned");
         S->prev = nullptr;
     }
     void* r = NULL;
@@ -563,7 +567,7 @@ void* video_main_inner(Session* S)
     int ao = -1;
     std::vector<int16_t> q;     // накопленные стереокадры 48 кГц
     size_t qpos = 0;
-    uint64_t idleSince = 0;
+    uint64_t idleSince = 0, jumpAt = 0;
     int ticks = 0;
     while (!S->stop) {
         // пауза и перемотка выполняются здесь, а не в потоке интерфейса: вызовы плеера могут задерживаться
@@ -573,8 +577,12 @@ void* video_main_inner(Session* S)
             if (pr < 0) logf_("video: %s = 0x%08X", wantPause ? "pause" : "resume", (unsigned)pr);
             S->pausedApplied = wantPause;
         }
-        int sk = S->seekMs.exchange(0);
+        // новый прыжок - только когда предыдущий завершён (или прошло 3 с), иначе нажатия копятся и прыжки не накладываются
+        uint64_t tnow = sceKernelGetProcessTime();
+        int sk = 0;
+        if (S->seekMs.load() != 0 && (S->jumpDone || tnow - jumpAt > 3000000ULL)) sk = S->seekMs.exchange(0);
         if (sk != 0) {
+            S->jumpDone = 0; jumpAt = tnow;
             long long cur = (long long)g_api.curTime(h) + sk;
             long long dur = S->durMs;
             if (dur > 0 && cur >= dur) cur = dur - 500;
@@ -780,8 +788,7 @@ void* vdec_main(void* arg)
         const uint8_t* C = Y + lumaBytes;
 
         uint64_t c0 = sceKernelGetProcessTime();
-        double k = std::min(1600.0 / visW, 900.0 / visH);
-        if (k > 1.0) k = 1.0;
+        double k = std::min(1920.0 / visW, 1080.0 / visH);   // на весь экран с сохранением пропорций (увеличение разрешено)
         int dw = std::max(2, (int)(visW * k)) & ~1, dh = std::max(2, (int)(visH * k)) & ~1;
         out.resize((size_t)dw * dh);
         xs.resize((size_t)dw);
