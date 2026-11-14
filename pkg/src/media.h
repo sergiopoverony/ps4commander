@@ -14,6 +14,7 @@ struct Picture {
 bool picture_decode(const std::string& data, int maxW, int maxH, Picture& out);
 
 // Звук.
+int audio_shared_port();           // единственный звуковой порт приложения (открывается один раз; закрытие слот не освобождает), <0 - ошибка
 bool audio_start(std::string& data, const std::string& ext, int userId);   // запускает в фоне; false - не удалось стартовать
 void audio_stop();                 // останавливает и ждёт завершения потока
 void audio_pause_toggle();

@@ -249,6 +249,16 @@ struct Resampler {
 
 alignas(256) static int16_t g_out[1024 * 2];
 
+static int g_sharedPort = -1;
+int audio_shared_port()
+{
+    if (g_sharedPort >= 0) return g_sharedPort;
+    sceAudioOutInit();
+    int h = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    if (h >= 0) g_sharedPort = h;
+    return h;
+}
+
 static void* audio_main(void* arg)
 {
     Player* P = (Player*)arg;
@@ -259,8 +269,7 @@ static void* audio_main(void* arg)
     if (!src || !src->init()) { logf_("audio: cannot decode .%s", P->ext.c_str()); P->state = 4; delete src; return NULL; }
     P->totalMs = (int)(src->total * 1000.0);
 
-    sceAudioOutInit();
-    int h = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    int h = audio_shared_port();
     if (h < 0) { logf_("audio: sceAudioOutOpen failed 0x%08X", (unsigned)h); P->state = 4; delete src; return NULL; }
 
     Resampler rs; rs.src = src; rs.step = (double)src->rate / 48000.0;
@@ -298,7 +307,6 @@ static void* audio_main(void* arg)
         sceAudioOutOutput(h, g_out);
         P->frames += i;
     }
-    sceAudioOutClose(h);
     delete src;
     return NULL;
 }

@@ -297,6 +297,8 @@ static uint32_t be32(const unsigned char* p) { return ((uint32_t)p[0] << 24) | (
 
 struct Mp4Track { std::string handler, fourcc; int profile = 0, level = 0, width = 0, height = 0; };
 
+static long long g_mvhdMs = 0;     // длительность из заголовка mvhd (плеер консоли для части файлов отдаёт 0)
+
 static void mp4_parse(const unsigned char* d, size_t n, std::vector<Mp4Track>& out, Mp4Track* cur, int depth)
 {
     size_t p = 0;
@@ -315,6 +317,11 @@ static void mp4_parse(const unsigned char* d, size_t n, std::vector<Mp4Track>& o
             out.push_back(tr);
         } else if ((!memcmp(t, "moov", 4) || !memcmp(t, "mdia", 4) || !memcmp(t, "minf", 4) || !memcmp(t, "stbl", 4)) && depth < 8) {
             mp4_parse(b, bl, out, cur, depth + 1);
+        } else if (!memcmp(t, "mvhd", 4) && bl >= 32) {
+            uint64_t ts, du;
+            if (b[0] == 1) { ts = be32(b + 20); du = ((uint64_t)be32(b + 24) << 32) | be32(b + 28); }
+            else { ts = be32(b + 12); du = be32(b + 16); }
+            if (ts) g_mvhdMs = (long long)(du * 1000ULL / ts);
         } else if (cur && !memcmp(t, "hdlr", 4) && bl >= 12) {
             cur->handler.assign((const char*)b + 8, 4);
         } else if (cur && !memcmp(t, "stsd", 4) && bl >= 16 + 86) {
@@ -430,7 +437,6 @@ bool g_vthValid = false;
 std::atomic<int> g_vstop{ 0 };
 
 alignas(256) int16_t g_aout[1024 * 2];
-int g_aoPort = -1;                 // звуковой порт открывается один раз и живёт до выхода: закрытие у системы не освобождало слот (после 8 видео порты кончались, 0x80260005)
 
 void sleep_ms(int ms) { sceKernelUsleep((unsigned)ms * 1000u); }
 
@@ -483,7 +489,9 @@ void* video_main_inner(Session* S)
         scePthreadAttrDestroy(&ra);
     }
     logf_("video: file '%s' size %llu", S->path.c_str(), total);
+    g_mvhdMs = 0;
     std::string vinfo = mp4_video_info(S->path, &S->note);
+    if (g_mvhdMs > 0) { S->durMs = g_mvhdMs; logf_("video: mp4 duration %lld ms", g_mvhdMs); }
     logf_("video: mp4 video track: %s", vinfo.empty() ? "none / not parsed" : vinfo.c_str());
     if (S->stop) return NULL;
 
@@ -621,13 +629,10 @@ void* video_main_inner(Session* S)
             }
         }
         if (aEn) {
-            if (ao < 0 && g_aoPort >= 0) ao = g_aoPort;
             if (ao < 0 && sceKernelGetProcessTime() >= aoRetryAt) {
-                sceAudioOutInit();
-                ao = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
-                if (aoFails++ < 3 || ao >= 0) logf_("video: sceAudioOutOpen = 0x%08X", (unsigned)ao);
-                if (ao >= 0) g_aoPort = ao;
-                else aoRetryAt = sceKernelGetProcessTime() + 2000000ULL;
+                ao = audio_shared_port();
+                if (aoFails++ < 3 || ao >= 0) logf_("video: audio port = 0x%08X", (unsigned)ao);
+                if (ao < 0) aoRetryAt = sceKernelGetProcessTime() + 2000000ULL;
             }
             if (ao >= 0) {
                 if ((q.size() - qpos) / 2 >= 1024) {
