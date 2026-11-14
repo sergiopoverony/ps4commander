@@ -91,6 +91,7 @@ bool service_ls(const std::string& path, LsView& out)
 
 static std::string g_ip;
 const std::string& service_ip() { return g_ip; }
+void service_set_ip(const std::string& ip) { g_ip = ip; }
 
 bool service_roots(std::vector<RootView>& out, std::string& version)
 {
@@ -225,6 +226,23 @@ bool service_state_get(std::string& l, std::string& r_, std::string& theme)
     r_ = j["r"].asStr();
     theme = j["theme"].asStr("classic");
     return true;
+}
+
+bool service_state_get_net(bool& unsafe, std::string& ip)
+{
+    HttpResult r = http_get(SERVICE_HOST, SERVICE_PORT, "/api/state", 2000);
+    if (!r.connected || r.status != 200) return false;
+    JsonValue j;
+    if (!json_parse(r.body, j) || j.type != JsonValue::OBJ) return false;
+    unsafe = j["unsafe"].asBool(false);
+    ip = j["ip"].asStr();
+    return true;
+}
+
+bool service_state_set_unsafe(bool on)
+{
+    std::string e;
+    return post_check("/api/state", on ? "{\"unsafe\":true}" : "{\"unsafe\":false}", e);
 }
 
 bool service_state_set_theme(const std::string& theme)

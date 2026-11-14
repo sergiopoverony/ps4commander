@@ -875,7 +875,11 @@ static void cycle_lang(int dir = 1)
     redraw();
 }
 
-static void set_unsafe(bool on) { g_unsafe = on; service_set_unsafe(on); redraw(); }
+static void set_unsafe(bool on)
+{
+    g_unsafe = on; service_set_unsafe(on); redraw();
+    async_run(ASYNC_POLL, [on]() { service_state_set_unsafe(on); }, NULL);   // сообщаем службе: веб-страница увидит то же самое
+}
 
 // Выход из приложения. Закрывается только приложение: служба продолжает работать (в ней может идти установка PKG).
 // Штатный выход на PS4 - sceSystemServiceLoadExec("exit"): обычные exit()/_exit() заканчивались ошибкой CE-34878-0.
@@ -1099,9 +1103,11 @@ static void draw_topbar()
 {
     draw_text("PS4 Commander", MARGIN_X, TOP_BASE, T.dir, T.bg);
     int x = MARGIN_X + 14 * cell_w() + 14;
-    std::string addr = "http://" + (service_ip().empty() ? std::string("<IP>") : service_ip()) + ":" + std::to_string(SERVICE_PORT);
-    draw_text(addr, x, TOP_BASE, T.modern ? T.text : T.border, T.bg);
-    x += count_cp(addr) * cell_w() + 24;
+    if (!service_ip().empty()) {                  // нет сети - адрес не показываем
+        std::string addr = "http://" + service_ip() + ":" + std::to_string(SERVICE_PORT);
+        draw_text(addr, x, TOP_BASE, T.modern ? T.text : T.border, T.bg);
+        x += count_cp(addr) * cell_w() + 24;
+    }
     fill_rounded(x, TOP_BASE - 14, 12, 12, 6, g_svc == S_READY ? T.ok : T.warn);
     x += 28;
     if (g_unsafe) draw_text(tr("unsafeOn", "SYSTEM AREAS UNLOCKED"), x, TOP_BASE, T.warn, T.bg);
@@ -1771,6 +1777,25 @@ void ui_pump()
     }
     smb_poll_step(now);
     poll_progress(now);
+    // раз в 2 с сверяем с службой режим системных областей (его мог переключить веб) и IP консоли
+    {
+        static uint64_t nextNet = 0;
+        static bool netBusy = false;
+        if (g_svc == S_READY && !netBusy && now >= nextNet) {
+            nextNet = now + 2000000ULL;
+            netBusy = true;
+            auto u = std::make_shared<bool>(false);
+            auto ip = std::make_shared<std::string>();
+            auto ok = std::make_shared<bool>(false);
+            async_run(ASYNC_POLL, [u, ip, ok]() { *ok = service_state_get_net(*u, *ip); },
+                [u, ip, ok]() {
+                    netBusy = false;
+                    if (!*ok) return;
+                    if (*u != g_unsafe) { g_unsafe = *u; service_set_unsafe(*u); redraw(); }
+                    if (*ip != service_ip()) { service_set_ip(*ip); redraw(); }
+                });
+        }
+    }
     // индикатор загрузки и прогресс обновляем и без нажатий
     static uint64_t lastTick = 0;
     if (now - lastTick >= 150000ULL && (g_busy > 0 || g_panels[0].loading || g_panels[1].loading || g_svc != S_READY || g_focus == F_AUDIO || g_focus == F_VIDEO || (g_focus == F_IMAGE && g_iv.loading))) { lastTick = now; redraw(); }

@@ -67,6 +67,9 @@ bool service_pkg_cancel();
 // Состояние (тема, последние пути панелей) - /api/state.
 bool service_state_get(std::string& l, std::string& r, std::string& theme);
 bool service_state_set_theme(const std::string& theme);
+bool service_state_get_net(bool& unsafe, std::string& ip);   // общий флаг системных областей и текущий IP консоли
+bool service_state_set_unsafe(bool on);
+void service_set_ip(const std::string& ip);
 bool service_state_set_paths(const std::string& l, const std::string& r);   // запомнить папки панелей
 
 // Просмотр текстового файла (как /api/view, с ограничением длины - для экрана этого достаточно).

@@ -233,6 +233,8 @@ static void do_download(int fd, const std::string& n, bool inl, const std::strin
 }
 
 // Положение панелей хранится на консоли, чтобы было одинаковым с любого устройства.
+// Режим "разрешить изменения в системных областях": общий для веб-страницы и приложения (в памяти службы, после перезапуска выключен).
+static bool g_unsafeShared = false;
 static std::string state_path() { return std::string(DATA_DIR) + "/state.json"; }
 static bool theme_ok(const std::string& t) { return t == "classic" || t == "dark" || t == "light"; }
 static std::string state_read() {
@@ -403,6 +405,7 @@ static void handle_post(int fd, const std::string& path, const std::string& body
             if (!theme_ok(j.get_str("theme"))) { respond_err(fd, 400, "bad_value"); return; }
             theme = j.get_str("theme");
         }
+        if (j.flag.count("unsafe")) g_unsafeShared = j.get_flag("unsafe");
         if (state_write(l, r, theme)) respond_json(fd, 200, "{\"ok\":true}"); else respond_err(fd, 400, "write_failed");
     } else if (path == "/api/smb/save") {
         SmbConn c;
@@ -557,7 +560,12 @@ static void handle(int fd) {
         else if (path == "/api/zip") do_zip(fd, query);
         else if (path == "/api/smb/scan") respond_json(fd, 200, smb_scan_json());
         else if (path == "/api/smb") respond_json(fd, 200, "{\"conns\":" + smb_conns_json() + "}");
-        else if (path == "/api/state") respond_json(fd, 200, state_read());
+        else if (path == "/api/state") {
+            std::string s = state_read();
+            if (!s.empty() && s.back() == '}') s.pop_back();
+            if (s.size() > 1) s += ",";
+            respond_json(fd, 200, s + "\"unsafe\":" + (g_unsafeShared ? "true" : "false") + ",\"ip\":\"" + json_esc(local_ip()) + "\"}");
+        }
         else if (path == "/api/log") {
             size_t n = 8192;
             std::string t = log_tail(n);

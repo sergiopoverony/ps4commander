@@ -1061,8 +1061,9 @@ function showSupport() {
   const ru = lang === 'ru';
   dialog(t('support'), [h('div', { class: 'qrbox' }, h('img', { src: ru ? '__QR_RU__' : '__QR_EN__', alt: 'QR ' + t('supportCap') }), h('div', { class: 'kv' }, t('supportCap')))], [{ label: t('close'), primary: true, fn: closeDlg }]);
 }
-function setUnsafe(v) {
+function setUnsafe(v, fromServer) {
   unsafeMode = v;
+  if (!fromServer) api('/api/state', { unsafe: v }).catch(() => {});
   document.body.classList.toggle('unsafe', v);
   $('#unsafeTag').textContent = v ? t('unsafeOn') : '';
 }
@@ -1203,6 +1204,18 @@ async function init() {
   if (st.r && isDiskPath(st.r) && !diskUp(st.r)) { panels[1].head.firstChild.textContent = ''; }
   else if (!(st.r && await load(panels[1], st.r, null, true))) await load(panels[1], rightDef, null);
   stateReady = true;
+  if (st.unsafe === true) setUnsafe(true, true);
+  // режим системных областей общий с приложением на консоли: подхватываем его изменения
+  setInterval(async () => {
+    try {
+      const x = await api('/api/state');
+      if (typeof x.unsafe === 'boolean' && x.unsafe !== unsafeMode) {
+        setUnsafe(x.unsafe, true);
+        const cb = document.querySelector('.rootbox input[type=checkbox]');
+        if (cb) cb.checked = x.unsafe;
+      }
+    } catch (e) {}
+  }, 2000);
   panels[0].list.focus();
 }
 init();
