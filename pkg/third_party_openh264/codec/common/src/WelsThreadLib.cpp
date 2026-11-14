@@ -50,7 +50,7 @@
 #include <unistd.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten/threading.h>
-#elif !defined(__Fuchsia__)
+#elif !defined(__Fuchsia__) && !defined(__ORBIS_PORT__)   /* PS4 Commander: в заголовках OpenOrbis нет sys/sysctl.h */
 #include <sys/sysctl.h>
 #endif
 #ifdef __APPLE__
@@ -513,6 +513,11 @@ WELS_THREAD_ERROR_CODE    WelsQueryLogicalProcessInfo (WelsLogicalProcessInfo* p
 
   // There is not yet a way to determine CPU count in emscripten JS environment.
   pInfo->ProcessorCount = emscripten_num_logical_cores();
+  return WELS_THREAD_ERROR_OK;
+
+#elif defined(__ORBIS_PORT__)
+
+  pInfo->ProcessorCount = 1;     /* PS4 Commander: однопоточный режим */
   return WELS_THREAD_ERROR_OK;
 
 #elif defined(__Fuchsia__)
