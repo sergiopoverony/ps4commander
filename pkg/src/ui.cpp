@@ -353,10 +353,34 @@ static void act_copy_move(bool move)
     if (names.empty()) return;
     for (auto& n : names) paths.push_back(join_path(src.path, n));
     std::string dest = dst.path;
-    std::string verb = move ? tr("move", "Move") : tr("copy", "Copy");
-    std::string title = verb + " " + std::to_string(paths.size()) + " " + tr("items", "items") + " -> " + dest + "?";
     std::string op = move ? "move" : "copy";
-    confirm_open(title, tr("overwrite", "Overwrite existing files"), verb, [=]() { start_job(op, paths, dest, true, ""); });
+    // что из выбранного уже лежит в папке назначения (по списку второй панели)
+    int clash = 0;
+    std::string firstSrc, firstDst;
+    for (auto& n : names) {
+        const Entry2 *se = nullptr, *de = nullptr;
+        for (auto& it : src.items) if (it.name == n) { se = &it; break; }
+        for (auto& it : dst.items) if (it.name == n && it.name != "..") { de = &it; break; }
+        if (!de) continue;
+        if (clash++ == 0 && se && !se->isDir() && !de->isDir()) { firstSrc = fmt_size(se->size); firstDst = fmt_size(de->size); }
+    }
+    bool oneDir = false;
+    if (names.size() == 1) for (auto& it : src.items) if (it.name == names[0]) oneDir = it.isDir();
+    std::string title;
+    if (names.size() == 1)
+        title = tr_sub(move ? (oneDir ? "askMoveDir" : "askMove1") : (oneDir ? "askCopyDir" : "askCopy1"), move ? "Move to {d}?" : "Copy to {d}?", { { "d", dest } });
+    else
+        title = tr_sub(move ? "askMoveN" : "askCopyN", move ? "Move {n} items to {d}?" : "Copy {n} items to {d}?", { { "n", std::to_string(names.size()) }, { "d", dest } });
+    std::string body;
+    if (clash > 0) {
+        if (names.size() == 1 && !firstSrc.empty())
+            body = tr("existsOne", "A file with this name already exists in the destination folder.") + "\n" + tr("szSrc", "File to copy") + ": " + firstSrc + "\n" + tr("szDst", "File in the folder") + ": " + firstDst;
+        else if (names.size() == 1)
+            body = tr("existsDir", "A folder with this name already exists in the destination; contents will be merged and files replaced.");
+        else
+            body = tr_sub("existsMany", "Already in the destination folder: {n} of {m}. They will be overwritten.", { { "n", std::to_string(clash) }, { "m", std::to_string(names.size()) } });
+    }
+    confirm_open(title, body, clash > 0 ? tr("overwriteBtn", "Overwrite") : (move ? tr("move", "Move") : tr("copy", "Copy")), [=]() { start_job(op, paths, dest, true, ""); });
 }
 
 static void act_delete()
@@ -918,14 +942,14 @@ static void run_bar_action(int idx)
 }
 
 // Контекстное меню на файле (Треугольник): Rename / Select / Properties / Cancel (+ Install для .pkg).
-static const char* CTX_KEYS[7] = { "rename", "select", "infoTitle", "del", "install", "cancel", "pkgTitle" };
-static const char* CTX_DEFS[7] = { "Rename", "Select", "Properties", "Delete", "Install PKG", "Cancel", "Package installation" };
+static const char* CTX_KEYS[8] = { "ctxRename", "ctxSelect", "infoTitle", "del", "install", "cancel", "pkgTitle", "ctxCopy" };
+static const char* CTX_DEFS[8] = { "Rename", "Mark", "Properties", "Delete", "Install PKG", "Cancel", "Package installation", "Copy" };
 // Пункты: "Install" - только на .pkg; "очередь установки" - только пока что-то устанавливается.
-static int ctx_count(bool pkg) { return 5 + (pkg ? 1 : 0) + (g_pkgBg ? 1 : 0); }
+static int ctx_count(bool pkg) { return 6 + (pkg ? 1 : 0) + (g_pkgBg ? 1 : 0); }
 static int ctx_id(int i, bool pkg)
 {
-    int ids[7], n = 0;
-    ids[n++] = 0; ids[n++] = 1; ids[n++] = 2; ids[n++] = 3;
+    int ids[8], n = 0;
+    ids[n++] = 0; ids[n++] = 1; ids[n++] = 7; ids[n++] = 3; ids[n++] = 2;
     if (pkg) ids[n++] = 4;
     if (g_pkgBg) ids[n++] = 6;
     ids[n++] = 5;
@@ -953,6 +977,7 @@ static void ctx_run(int idx)
     case 3: act_delete(); break;
     case 4: act_install(); break;
     case 6: pkgq_open(); break;
+    case 7: act_copy_move(false); break;
     default: break;
     }
 }
@@ -1183,7 +1208,7 @@ static void draw_ctxmenu()
     Entry2* e = panel_cur(g_panels[g_active]);
     bool pkg = e && is_pkg(*e);
     int n = ctx_count(pkg);
-    int w = 520, h = 100 + n * 48 + 40;
+    int w = 520, h = 88 + n * 48;
     int x, y; dlg_box(w, h, "", x, y);
     put_center(FRAME_WIDTH / 2, e ? fit(e->name, (w - 40) / cell_w()) : "", y + 44, T.modern ? T.accent : T.dlgFg, T.dlgBg);
     fill(x + 24, y + 58, w - 48, 1, T.dlgBorder);
