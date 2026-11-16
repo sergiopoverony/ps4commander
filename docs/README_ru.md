@@ -19,5 +19,15 @@
 ## Статус
 Ранняя разработка (v0.1). В планах PKG-приложение с управлением геймпадом.
 
+## Сборка
+Сборка новым SDK (14.02, `~/sdk1402`). Payload:
+```
+PS4_PAYLOAD_SDK=$HOME/sdk1402 make clean all
+```
+PKG вместе со службой:
+```
+cd pkg && export OO_PS4_TOOLCHAIN=/home/sony/OpenOrbis-PS4-Toolchain PS4_PAYLOAD_SDK=$HOME/sdk1402 && make clean && make full
+```
+
 ## Лицензия
 GPLv3, см. [LICENSE](LICENSE).
